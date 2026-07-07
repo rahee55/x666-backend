@@ -13,9 +13,17 @@ yarn-error.log*
 
 # Optional npm cache directory
 .npm
-
+/.history
 # Optional eslint cache
 .eslintcache
 
 # Mac OS folder attributes
 .DS_Store
+
+# Uploads (keep folder structure via .gitkeep)
+uploads/**/*
+!uploads/**/.gitkeep
+
+# Local history
+.history/*
+!.history/.gitkeep
