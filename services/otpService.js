@@ -7,7 +7,7 @@ const OTP_RATE_LIMIT = 5;
 const OTP_RATE_WINDOW_MS = 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
 
-const VALID_PURPOSES = ['signup', 'topup', 'withdraw', 'login', 'reset_password'];
+const VALID_PURPOSES = ['reset_password'];
 
 class OtpRateLimitError extends Error {
   constructor(message = 'Too many OTP requests. Please try again in 10 minutes.') {

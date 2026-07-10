@@ -9,13 +9,13 @@
 
 Referral-driven **spin & wallet** backend:
 
-1. **Signup** → email OTP → account + wallet created (optional referral code)
+1. **Signup** → single step — account + wallet created (optional referral code)
 2. **Login** → JWT token · **Logout** → clear session, client discards JWT
 3. **Spin** → **one spin per user (lifetime)**; weighted wheel — only **50 (85%)** or **100 (15%)** can win
 4. **Referrals** → share link; 50 qualifying referrals → **1000 PKR** bonus
 5. **Wallet** → Safepay top-up (auto-reconcile on poll); Safepay withdraw via **bank / JazzCash / EasyPaisa** (first spin required)
 
-**OTP policy:** All OTPs are sent **via email only** (Nodemailer). SMS is not used.
+**OTP policy:** OTP is used **only for forgot / reset password** (email via Nodemailer). Signup, top-up, and withdraw do **not** require OTP.
 
 **Withdraw rule:** User must complete their **first (lifetime) spin** before withdraw is allowed.
 
@@ -75,7 +75,7 @@ No auth. No body.
 
 #### `POST /api/auth/signup`
 
-Rate limit: `authLimiter` (20 / 15 min) + `otpLimiter` (5 / min) — OTP **send** only
+Rate limit: `authLimiter` (20 / 15 min). **No OTP** — creates account immediately.
 
 **Request**
 ```json
@@ -98,47 +98,6 @@ Rate limit: `authLimiter` (20 / 15 min) + `otpLimiter` (5 / min) — OTP **send*
 | `confirmPassword` | yes | must match password |
 | `referralCode` | no | must exist if provided |
 
-**Response 200**
-```json
-{
-  "success": true,
-  "message": "OTP sent to your email. Complete signup via /verify-otp.",
-  "data": {
-    "phone": "03001234567",
-    "email": "user@example.com",
-    "otpSentTo": ["email"],
-    "verifyWith": "email",
-    "devHint": "Check your email inbox for the OTP code.",
-    "emailPreviewUrl": "https://ethereal.email/message/..."
-  }
-}
-```
-
-`emailPreviewUrl` and `devHint` only appear in development. In dev, if Gmail is not configured, check terminal for `[EMAIL OTP DEV]` or Ethereal preview URL.
-
-**Errors:** `400` validation · `409` phone/email taken · `429` OTP limit
-
----
-
-#### `POST /api/auth/verify-otp`
-
-No OTP rate limit (verify only — wrong-code attempts capped in `otpService`)
-
-**Request** — same fields as signup, plus OTP:
-```json
-{
-  "name": "Bilal Ahmad",
-  "phone": "03001234567",
-  "email": "user@example.com",
-  "password": "secret123",
-  "confirmPassword": "secret123",
-  "code": "482910",
-  "referralCode": "ABC12345"
-}
-```
-
-Use the **email OTP** in `code`. Phone is stored but not verified via OTP.
-
 **Response 201**
 ```json
 {
@@ -152,7 +111,7 @@ Use the **email OTP** in `code`. Phone is stored but not verified via OTP.
       "phone": "03001234567",
       "email": "user@example.com",
       "isPhoneVerified": false,
-      "isEmailVerified": true,
+      "isEmailVerified": false,
       "referralCode": "A1B2C3D4",
       "totalReferrals": 0,
       "kycStatus": "pending"
@@ -161,7 +120,7 @@ Use the **email OTP** in `code`. Phone is stored but not verified via OTP.
 }
 ```
 
-**Errors:** `400` bad OTP · `409` already registered · `429` too many attempts
+**Errors:** `400` validation · `409` phone/email taken
 
 ---
 
@@ -221,7 +180,7 @@ Destroys server session if present. Client must delete the stored JWT — tokens
 
 #### `POST /api/auth/forgot-password`
 
-Rate limit: `otpLimiter` (5 / min) — OTP send
+Rate limit: `otpLimiter` (5 / min) — **only OTP send endpoint besides none**
 
 **Request** — email required:
 ```json
@@ -246,7 +205,7 @@ Rate limit: `otpLimiter` (5 / min) — OTP send
 
 #### `POST /api/auth/reset-password`
 
-No OTP rate limit (verify only)
+Requires OTP from forgot-password flow.
 
 **Request** — email required:
 ```json
@@ -535,7 +494,7 @@ Requires JWT. **Auto-reconciles** pending top-ups. Top-up rows with DB status `s
 
 #### `POST /api/wallet/topup`
 
-Requires JWT · rate limit: `otpLimiter` (5 / min) — OTP **send** only
+Requires JWT · **no OTP**. Creates Safepay checkout immediately.
 
 **Request**
 ```json
@@ -550,33 +509,7 @@ Minimum: `100` (`MIN_TOPUP`)
 ```json
 {
   "success": true,
-  "message": "OTP sent. Complete top-up via /wallet/topup/verify.",
-  "data": {
-    "amount": 500,
-    "otpSentTo": "email"
-  }
-}
-```
-
----
-
-#### `POST /api/wallet/topup/verify`
-
-Requires JWT · **no OTP rate limit** (verify only)
-
-**Request**
-```json
-{
-  "amount": 500,
-  "code": "482910"
-}
-```
-
-**Response 200**
-```json
-{
-  "success": true,
-  "message": "Safepay sandbox checkout session created",
+  "message": "Safepay checkout session created",
   "data": {
     "orderId": "TOPUP-665a-1234567890",
     "tracker": "safepay_tracker",
@@ -628,7 +561,7 @@ Requires JWT. Same response shape as `topup/status/:orderId`, keyed by MongoDB t
 
 #### `POST /api/wallet/withdraw`
 
-Requires JWT · rate limit: `otpLimiter` (5 / min) · **requires first spin completed**
+Requires JWT · **no OTP** · **requires first spin completed**
 
 **Request — JazzCash / EasyPaisa**
 ```json
@@ -656,41 +589,6 @@ Requires JWT · rate limit: `otpLimiter` (5 / min) · **requires first spin comp
 | `accountNumber` | for wallets | JazzCash / EasyPaisa mobile number |
 | `iban` | for bank | Pakistani IBAN |
 | `accountTitle` | no | optional bank account name |
-
-**Response 200**
-```json
-{
-  "success": true,
-  "message": "OTP sent. Complete withdrawal via /wallet/withdraw/verify.",
-  "data": {
-    "amount": 500,
-    "gateway": "jazzcash",
-    "destinationAccount": "03001234567",
-    "accountNumber": "03001234567",
-    "iban": null,
-    "otpSentTo": "email",
-    "withdrawMode": "sandbox_auto"
-  }
-}
-```
-
-**Errors:** `402` insufficient balance · `403` first spin not done · `429` OTP send limit
-
----
-
-#### `POST /api/wallet/withdraw/verify`
-
-Requires JWT · **no OTP rate limit** · **requires first spin completed**
-
-**Request**
-```json
-{
-  "amount": 500,
-  "gateway": "jazzcash",
-  "accountNumber": "03001234567",
-  "code": "482910"
-}
-```
 
 **Response 200** (sandbox — instant)
 ```json
@@ -737,6 +635,8 @@ Requires JWT · **no OTP rate limit** · **requires first spin completed**
   }
 }
 ```
+
+**Errors:** `402` insufficient balance · `403` first spin not done
 
 ---
 
@@ -993,7 +893,7 @@ No body. Pays when ≥ 50 qualifying referrals are eligible.
 {
   "identifier": "email address",
   "code": "hashed",
-  "purpose": "signup | topup | withdraw | login | reset_password",
+  "purpose": "reset_password",
   "expiresAt": "10 min TTL",
   "attempts": 0,
   "verified": false
@@ -1047,17 +947,10 @@ No body. Pays when ≥ 50 qualifying referrals are eligible.
 | Limiter | Window | Max | Used on |
 |---------|--------|-----|---------|
 | `authLimiter` | 15 min | 20 | signup, login |
-| `otpLimiter` | 1 min | 5 | OTP **send** only: signup, forgot-password, wallet topup, wallet withdraw |
+| `otpLimiter` | 1 min | 5 | **Forgot password only** (`POST /auth/forgot-password`) |
 | `spinLimiter` | 1 min | 10 | POST /spin/spin |
 
-OTP verify routes (`verify-otp`, `reset-password`, `topup/verify`, `withdraw/verify`) are **not** rate-limited by `otpLimiter`. Wrong-code attempts are capped inside `otpService` (5 tries per OTP).
-
-**OTP limit response (429):**
-```json
-{
-  "message": "Too many OTP requests. Please try again in 10 minutes."
-}
-```
+Reset-password OTP verify is not rate-limited by `otpLimiter`; wrong-code attempts are capped inside `otpService` (5 tries per OTP).
 
 ### Safepay env vars
 
@@ -1120,7 +1013,7 @@ Every active file in the trimmed project and what it does.
 | File | Purpose |
 |------|---------|
 | `index.js` | Main router — mounts auth, users, wallet, spin, referrals + health + referral-link |
-| `authRoutes.js` | Signup, verify-otp, login, logout, forgot/reset password |
+| `authRoutes.js` | Signup, login, logout, forgot/reset password (OTP on password reset only) |
 | `userRoutes.js` | GET/PUT profile |
 | `walletRoutes.js` | Balance, transactions, topup/withdraw flows, Safepay callbacks, payment-config |
 | `spinRoutes.js` | Spin, history, result by id |
@@ -1130,9 +1023,9 @@ Every active file in the trimmed project and what it does.
 
 | File | Purpose |
 |------|---------|
-| `authController.js` | Signup email OTP flow, login JWT, logout, password reset |
+| `authController.js` | Single-step signup, login JWT, logout, password reset OTP |
 | `userController.js` | Profile CRUD, referral link generation |
-| `walletController.js` | Top-up OTP → Safepay checkout → auto-reconcile; Safepay withdraw (bank/wallets) |
+| `walletController.js` | Top-up → Safepay checkout → auto-reconcile; Safepay withdraw (bank/wallets) |
 | `spinController.js` | Execute spin, record history, referral qualifying spin, expose `canWithdraw` |
 | `referralController.js` | List referrals, stats, claim 50-referral bonus |
 
@@ -1160,7 +1053,7 @@ Every active file in the trimmed project and what it does.
 
 | File | Purpose |
 |------|---------|
-| `otpService.js` | Generate, hash, send (email-only via Nodemailer), verify OTP |
+| `otpService.js` | Generate, hash, send (email), verify OTP — **reset_password only** |
 | `walletService.js` | Atomic credit/debit, complete topup, auto-reconcile pending topups, withdraw queues |
 | `spinService.js` | Weighted slot picker, lifetime spin limit, first-spin withdraw gate |
 | `referralService.js` | Track referrals, mark qualifying spin, pay 50-referral bonus |
@@ -1175,9 +1068,9 @@ Every active file in the trimmed project and what it does.
 
 ### Fully working
 
-- Two-step signup with **email-only** OTP
-- JWT login, **logout**, forgot/reset password (email OTP)
-- OTP rate limit on **send only** (5 / min); verify routes unrestricted
+- Single-step signup (**no OTP**)
+- JWT login, **logout**, forgot/reset password (**OTP email only**)
+- OTP rate limit on forgot-password send only (5 / min)
 - Profile + referral share link
 - Weighted spin with **one-time lifetime limit**; unlocks withdraw (`canWithdraw`)
 - Referral chain + 50-referral bonus payout
@@ -1194,7 +1087,7 @@ Every active file in the trimmed project and what it does.
 
 | Item | Detail |
 |------|--------|
-| SMS OTP | Not used — all OTPs are email-only |
+| SMS OTP | Not used |
 | JazzCash / EasyPaisa live API | Config exists; payouts use Safepay sandbox or manual queue |
 | Admin withdraw | No route to approve/reject `pending_manual_review` |
 | KYC | Field on User model only — no workflow |

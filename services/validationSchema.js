@@ -7,16 +7,6 @@ const signupSchema = {
   referralCode: { type: 'string' },
 };
 
-const verifySignupSchema = {
-  name: { required: true, type: 'string', minLength: 2 },
-  phone: { required: true, type: 'string' },
-  email: { required: true, type: 'string' },
-  password: { required: true, type: 'string', minLength: 6 },
-  confirmPassword: { required: true, type: 'string', minLength: 6 },
-  code: { required: true, type: 'string' },
-  referralCode: { type: 'string' },
-};
-
 const loginSchema = {
   phone: { type: 'string' },
   email: { type: 'string' },
@@ -38,11 +28,6 @@ const topupSchema = {
   amount: { required: true, type: 'number', min: 1 },
 };
 
-const topupVerifySchema = {
-  amount: { required: true, type: 'number', min: 1 },
-  code: { required: true, type: 'string' },
-};
-
 const { WITHDRAW_GATEWAYS, getWithdrawMethod } = require('../config/withdrawMethods');
 
 const withdrawSchema = {
@@ -51,15 +36,6 @@ const withdrawSchema = {
   accountNumber: { type: 'string' },
   iban: { type: 'string' },
   accountTitle: { type: 'string' },
-};
-
-const withdrawVerifySchema = {
-  amount: { required: true, type: 'number', min: 1 },
-  gateway: { required: true, type: 'string', enum: WITHDRAW_GATEWAYS },
-  accountNumber: { type: 'string' },
-  iban: { type: 'string' },
-  accountTitle: { type: 'string' },
-  code: { required: true, type: 'string' },
 };
 
 const validateWithdrawDetails = (data) => {
@@ -78,12 +54,6 @@ const validateWithdrawDetails = (data) => {
   });
 
   return errors;
-};
-
-const validateWithdrawVerify = (data) => {
-  const errors = validateWithdrawDetails(data);
-  const codeErrors = validate({ code: { required: true, type: 'string' } }, data);
-  return [...errors, ...codeErrors];
 };
 
 const validate = (schema, data) => {
@@ -127,16 +97,12 @@ const passwordsMatch = (password, confirmPassword) => password === confirmPasswo
 
 module.exports = {
   signupSchema,
-  verifySignupSchema,
   loginSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
   topupSchema,
-  topupVerifySchema,
   withdrawSchema,
-  withdrawVerifySchema,
   validateWithdrawDetails,
-  validateWithdrawVerify,
   validate,
   passwordsMatch,
 };

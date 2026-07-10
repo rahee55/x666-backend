@@ -15,7 +15,6 @@ const {
   findTopupByIdForUser,
   reconcilePendingTopupsForUser,
 } = require('../services/walletService');
-const { sendOTP, verifyOTP, OtpRateLimitError } = require('../services/otpService');
 const {
   initiateCollection,
   initiatePayout,
@@ -28,15 +27,11 @@ const {
 } = require('../services/paymentService');
 const {
   topupSchema,
-  topupVerifySchema,
   validateWithdrawDetails,
-  validateWithdrawVerify,
   validate,
 } = require('../services/validationSchema');
 const { getWithdrawEligibility, assertWithdrawAllowed } = require('../services/spinService');
 const { asyncHandler, sendSuccess, sendError } = require('../services/helper');
-
-const resolveOtpIdentifier = (user) => user.email || null;
 
 const resolveWithdrawDestination = ({ gateway, accountNumber, iban }) => {
   if (gateway === 'bank') {
@@ -52,13 +47,6 @@ const resolveAccountUsed = (gateway, payoutMode) => {
   }
 
   return payoutMode === 'raast' ? 'safepay' : 'other';
-};
-
-const handleOtpError = (res, error) => {
-  if (error instanceof OtpRateLimitError || error.code === 'OTP_RATE_LIMIT') {
-    return sendError(res, error.message, error.status || 429);
-  }
-  return sendError(res, error.message);
 };
 
 const frontendUrl = (path, params = {}) => {
@@ -287,44 +275,6 @@ exports.topup = asyncHandler(async (req, res) => {
     return sendError(res, `Minimum top-up is ${MIN_TOPUP}`);
   }
 
-  const identifier = resolveOtpIdentifier(req.user);
-  if (!identifier) {
-    return sendError(res, 'No email on file for OTP delivery');
-  }
-
-  try {
-    await sendOTP(identifier, 'topup');
-  } catch (error) {
-    return handleOtpError(res, error);
-  }
-
-  sendSuccess(res, {
-    message: 'OTP sent. Complete top-up via /wallet/topup/verify.',
-    data: { amount, otpSentTo: 'email' },
-  });
-});
-
-exports.topupVerify = asyncHandler(async (req, res) => {
-  const errors = validate(topupVerifySchema, req.body);
-  if (errors.length) return sendError(res, errors.join(', '));
-
-  const { amount, code } = req.body;
-
-  if (amount < MIN_TOPUP) {
-    return sendError(res, `Minimum top-up is ${MIN_TOPUP}`);
-  }
-
-  const identifier = resolveOtpIdentifier(req.user);
-  if (!identifier) {
-    return sendError(res, 'No email on file for OTP verification');
-  }
-
-  try {
-    await verifyOTP(identifier, code, 'topup');
-  } catch (error) {
-    return sendError(res, error.message, error.message.includes('attempts exceeded') ? 429 : 400);
-  }
-
   const collection = await initiateCollection(amount, req.user._id);
 
   const transaction = await recordTransaction(req.user._id, 'topup', amount, {
@@ -335,7 +285,7 @@ exports.topupVerify = asyncHandler(async (req, res) => {
   });
 
   sendSuccess(res, {
-    message: 'Safepay sandbox checkout session created',
+    message: 'Safepay checkout session created',
     data: {
       orderId: collection.orderId,
       tracker: collection.tracker,
@@ -440,68 +390,6 @@ exports.withdraw = asyncHandler(async (req, res) => {
 
   if (amount < MIN_WITHDRAW) {
     return sendError(res, `Minimum withdrawal is ${MIN_WITHDRAW}`);
-  }
-
-  const wallet = await getBalance(req.user._id);
-  if (!wallet || wallet.balance < amount) {
-    return sendError(res, 'Insufficient balance', 402);
-  }
-
-  const identifier = resolveOtpIdentifier(req.user);
-  if (!identifier) {
-    return sendError(res, 'No email on file for OTP delivery');
-  }
-
-  try {
-    await sendOTP(identifier, 'withdraw');
-  } catch (error) {
-    return handleOtpError(res, error);
-  }
-
-  sendSuccess(res, {
-    message: 'OTP sent. Complete withdrawal via /wallet/withdraw/verify.',
-    data: {
-      amount,
-      gateway,
-      destinationAccount,
-      accountNumber: accountNumber || null,
-      iban: gateway === 'bank' ? destinationAccount : null,
-      accountTitle: accountTitle || null,
-      otpSentTo: 'email',
-      withdrawMode: paymentConfig.safepay.withdrawMode,
-    },
-  });
-});
-
-exports.withdrawVerify = asyncHandler(async (req, res) => {
-  try {
-    await assertWithdrawAllowed(req.user._id);
-  } catch (error) {
-    if (error.code === 'FIRST_SPIN_REQUIRED') {
-      return sendError(res, error.message, error.status);
-    }
-    throw error;
-  }
-
-  const errors = validateWithdrawVerify(req.body);
-  if (errors.length) return sendError(res, errors.join(', '));
-
-  const { amount, gateway, accountNumber, iban, accountTitle, code } = req.body;
-  const destinationAccount = resolveWithdrawDestination({ gateway, accountNumber, iban });
-
-  if (amount < MIN_WITHDRAW) {
-    return sendError(res, `Minimum withdrawal is ${MIN_WITHDRAW}`);
-  }
-
-  const identifier = resolveOtpIdentifier(req.user);
-  if (!identifier) {
-    return sendError(res, 'No email on file for OTP verification');
-  }
-
-  try {
-    await verifyOTP(identifier, code, 'withdraw');
-  } catch (error) {
-    return sendError(res, error.message, error.message.includes('attempts exceeded') ? 429 : 400);
   }
 
   const walletBefore = await getBalance(req.user._id);

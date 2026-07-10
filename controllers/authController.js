@@ -6,7 +6,6 @@ const { trackReferral } = require('../services/referralService');
 const { asyncHandler, sendSuccess, sendError } = require('../services/helper');
 const {
   signupSchema,
-  verifySignupSchema,
   loginSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
@@ -57,78 +56,14 @@ exports.signup = asyncHandler(async (req, res) => {
     return sendError(res, 'Password and confirm password do not match');
   }
 
-  const phoneTaken = await User.findOne({ phone: phone.trim() });
-  if (phoneTaken) return sendError(res, 'Phone already registered', 409);
-
-  const emailTaken = await User.findOne({ email: email.trim().toLowerCase() });
-  if (emailTaken) return sendError(res, 'Email already registered', 409);
-
-  try {
-    if (referralCode) await findReferrer(referralCode);
-  } catch (error) {
-    return sendError(res, error.message);
-  }
-
-  let emailDelivery;
-  const normalizedEmail = email.trim().toLowerCase();
-
-  try {
-    ({ delivery: emailDelivery } = await sendOTP(normalizedEmail, 'signup'));
-  } catch (error) {
-    return handleOtpError(res, error);
-  }
-
-  const data = {
-    phone: phone.trim(),
-    email: normalizedEmail,
-    otpSentTo: ['email'],
-    verifyWith: 'email',
-  };
-
-  if (process.env.NODE_ENV !== 'production') {
-    data.devHint = 'Check your email inbox for the OTP code.';
-    if (emailDelivery?.status !== 'sent') {
-      data.emailDeliveryNote =
-        'Email not delivered. Check server terminal for [Nodemailer] Preview URL or [EMAIL OTP DEV] code.';
-    } else if (emailDelivery?.previewUrl) {
-      data.emailPreviewUrl = emailDelivery.previewUrl;
-    }
-  }
-
-  sendSuccess(res, {
-    message: 'OTP sent to your email. Complete signup via /verify-otp.',
-    data,
-  }, 200);
-});
-
-exports.verifyOtp = asyncHandler(async (req, res) => {
-  const errors = validate(verifySignupSchema, req.body);
-  if (errors.length) return sendError(res, errors.join(', '));
-
-  const { name, phone, email, password, confirmPassword, code, referralCode } = req.body;
-
-  if (!passwordsMatch(password, confirmPassword)) {
-    return sendError(res, 'Password and confirm password do not match');
-  }
-
   const normalizedPhone = phone.trim();
-  const normalizedEmail = email ? email.trim().toLowerCase() : undefined;
-
-  if (!normalizedEmail) {
-    return sendError(res, 'Email is required for OTP verification');
-  }
+  const normalizedEmail = email.trim().toLowerCase();
 
   const phoneTaken = await User.findOne({ phone: normalizedPhone });
   if (phoneTaken) return sendError(res, 'Phone already registered', 409);
 
   const emailTaken = await User.findOne({ email: normalizedEmail });
   if (emailTaken) return sendError(res, 'Email already registered', 409);
-
-  try {
-    await verifyOTP(normalizedEmail, code, 'signup');
-  } catch (error) {
-    return sendError(res, error.message, error.message.includes('attempts exceeded') ? 429 : 400);
-  }
 
   let referrer = null;
   try {
@@ -143,7 +78,7 @@ exports.verifyOtp = asyncHandler(async (req, res) => {
     email: normalizedEmail,
     password,
     isPhoneVerified: false,
-    isEmailVerified: true,
+    isEmailVerified: false,
     referredBy: referrer?._id || null,
   });
 
