@@ -1,7 +1,7 @@
 # x666-backend — Project Audit
 
 > Readable reference for the trimmed codebase.  
-> Updated: 2026-07-07 · Base URL: `http://localhost:3001/api`
+> Updated: 2026-07-10 · Base URL: `http://localhost:3001/api`
 
 ---
 
@@ -93,7 +93,7 @@ Rate limit: `authLimiter` (20 / 15 min). **No OTP** — creates account immediat
 |-------|----------|-------|
 | `name` | yes | min 2 chars |
 | `phone` | yes | unique |
-| `email` | yes | unique · OTP sent here |
+| `email` | yes | unique |
 | `password` | yes | min 6 chars |
 | `confirmPassword` | yes | must match password |
 | `referralCode` | no | must exist if provided |
@@ -180,7 +180,7 @@ Destroys server session if present. Client must delete the stored JWT — tokens
 
 #### `POST /api/auth/forgot-password`
 
-Rate limit: `otpLimiter` (5 / min) — **only OTP send endpoint besides none**
+Rate limit: `otpLimiter` (5 / min) — **only OTP send endpoint in the app**
 
 **Request** — email required:
 ```json
@@ -229,7 +229,7 @@ Requires OTP from forgot-password flow.
 }
 ```
 
-**Errors:** `400` · `404` user not found · `429`
+**Errors:** `400` bad OTP · `404` user not found · `429` too many verify attempts
 
 ---
 
@@ -850,7 +850,7 @@ No body. Pays when ≥ 50 qualifying referrals are eligible.
   "email": "string (unique, required)",
   "password": "hashed, hidden from queries",
   "isPhoneVerified": false,
-  "isEmailVerified": true,
+  "isEmailVerified": false,
   "referralCode": "auto-generated, unique",
   "referredBy": "ObjectId → User",
   "totalReferrals": 0,
@@ -952,6 +952,13 @@ No body. Pays when ≥ 50 qualifying referrals are eligible.
 
 Reset-password OTP verify is not rate-limited by `otpLimiter`; wrong-code attempts are capped inside `otpService` (5 tries per OTP).
 
+**OTP limit response (429)** — forgot-password only:
+```json
+{
+  "message": "Too many OTP requests. Please try again in 10 minutes."
+}
+```
+
 ### Safepay env vars
 
 | Variable | Purpose |
@@ -1045,7 +1052,7 @@ Every active file in the trimmed project and what it does.
 | `Users.js` | User account, password hashing, referral code auto-gen |
 | `Wallet.js` | Balance + locked balance per user |
 | `Transaction.js` | Ledger: topup, withdraw, spin, referral bonus |
-| `OTP.js` | Hashed OTP records with TTL and attempt tracking |
+| `OTP.js` | Hashed OTP records — **reset_password purpose only** |
 | `SpinHistory.js` | Per-spin results; used to enforce one-time lifetime spin limit |
 | `Referral.js` | Referrer ↔ referred user link and bonus eligibility |
 
@@ -1078,7 +1085,7 @@ Every active file in the trimmed project and what it does.
 - Top-up API returns `"status": "paid"` when complete (no manual confirm)
 - Safepay withdraw via **bank (IBAN)**, **JazzCash**, **EasyPaisa**
 - Sandbox instant withdraw (`SAFEPAY_WITHDRAW_MODE=sandbox_auto`)
-- Withdraw email OTP + manual-review queue + locked balance (production manual mode)
+- Withdraw **no OTP** — single `POST /wallet/withdraw`; manual-review queue + locked balance in production manual mode
 - Raast bank payout when aggregator creds configured
 - Transaction ledger
 - Nodemailer email delivery (Gmail or Ethereal dev mode)
@@ -1097,6 +1104,26 @@ Every active file in the trimmed project and what it does.
 
 ---
 
+## Removed endpoints (2026-07-10)
 
+OTP was removed from signup, top-up, and withdraw. These routes no longer exist:
+
+| Method | Path | Former purpose |
+|--------|------|----------------|
+| `POST` | `/api/auth/verify-otp` | Second-step signup with email OTP |
+| `POST` | `/api/wallet/topup/verify` | Top-up OTP then Safepay checkout |
+| `POST` | `/api/wallet/withdraw/verify` | Withdraw OTP then payout |
+| `POST` | `/api/wallet/topup/confirm` | Manual top-up confirm (removed earlier) |
+
+**Replacement flows:**
+
+| Action | Endpoint | Notes |
+|--------|----------|-------|
+| Signup | `POST /auth/signup` | Returns token + user in one step |
+| Top-up | `POST /wallet/topup` | Returns `checkoutUrl` immediately |
+| Withdraw | `POST /wallet/withdraw` | Processes payout immediately (after first spin) |
+| Password reset | `POST /auth/forgot-password` → `POST /auth/reset-password` | **OTP still required** |
+
+---
 
 *End of audit.*
