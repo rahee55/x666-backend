@@ -9,7 +9,7 @@
 
 Referral-driven **spin & wallet** backend:
 
-1. **Signup** → email OTP → account + wallet created (optional referral code)
+1. **Signup** → email → account + wallet created (optional referral code)
 2. **Login** → JWT token · **Logout** → clear session, client discards JWT
 3. **Spin** → **one spin per user (lifetime)**; weighted wheel — only **50 (85%)** or **100 (15%)** can win
 4. **Referrals** → share link; 50 qualifying referrals → **1000 PKR** bonus
