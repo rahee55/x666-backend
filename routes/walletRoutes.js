@@ -1,6 +1,7 @@
 const express = require('express');
 const walletController = require('../controllers/walletController');
 const auth = require('../middleware/auth');
+const { otpLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 
@@ -20,6 +21,7 @@ router.get('/transactions', walletController.getTransactions);
 router.get('/topup/status/:orderId', walletController.getTopupStatus);
 router.get('/topup/transaction/:id', walletController.getTopupStatusById);
 
+router.post('/send-otp', otpLimiter, walletController.sendOtp);
 router.post('/topup', walletController.topup);
 
 router.post('/withdraw', walletController.withdraw);

@@ -1,5 +1,6 @@
 const OTP = require('../models/OTP');
 const { sendEmail, useEthereal } = require('../config/email');
+const { sendSms, isConfigured: isTwilioConfigured } = require('../config/twilio');
 const { generateCode } = require('./helper');
 
 const OTP_EXPIRY_MS = 10 * 60 * 1000;
@@ -7,7 +8,14 @@ const OTP_RATE_LIMIT = 5;
 const OTP_RATE_WINDOW_MS = 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
 
-const VALID_PURPOSES = ['reset_password'];
+const VALID_PURPOSES = ['signup', 'reset_password', 'topup', 'withdraw'];
+
+const PURPOSE_LABELS = {
+  signup: 'signup',
+  reset_password: 'password reset',
+  topup: 'top-up',
+  withdraw: 'withdrawal',
+};
 
 class OtpRateLimitError extends Error {
   constructor(message = 'Too many OTP requests. Please try again in 10 minutes.') {
@@ -18,16 +26,41 @@ class OtpRateLimitError extends Error {
   }
 }
 
+const isEmail = (identifier) => identifier.includes('@');
+
+const normalizePhone = (phone) => {
+  const trimmed = String(phone).trim();
+  const digits = trimmed.replace(/\D/g, '');
+
+  if (digits.startsWith('92') && digits.length === 12) {
+    return `+${digits}`;
+  }
+
+  if (digits.startsWith('0') && digits.length === 11) {
+    return `+92${digits.slice(1)}`;
+  }
+
+  if (digits.length === 10 && digits.startsWith('3')) {
+    return `+92${digits}`;
+  }
+
+  if (trimmed.startsWith('+')) {
+    return trimmed;
+  }
+
+  return trimmed;
+};
+
 const normalizeIdentifier = (identifier) => {
   if (!identifier || typeof identifier !== 'string') {
     throw new Error('A valid identifier (phone or email) is required');
   }
 
   const trimmed = identifier.trim();
-  return trimmed.includes('@') ? trimmed.toLowerCase() : trimmed;
+  return isEmail(trimmed) ? trimmed.toLowerCase() : normalizePhone(trimmed);
 };
 
-const isEmail = (identifier) => identifier.includes('@');
+const getIdentifierChannel = (identifier) => (isEmail(identifier) ? 'email' : 'sms');
 
 const assertValidPurpose = (purpose) => {
   if (!VALID_PURPOSES.includes(purpose)) {
@@ -48,20 +81,35 @@ const checkSendRateLimit = async (identifier) => {
 };
 
 const sendSmsOtp = async (phone, code, purpose) => {
-  const payload = {
-    to: phone,
-    message: `Your ${purpose} verification code is ${code}. Valid for 10 minutes.`,
-    provider: process.env.SMS_PROVIDER || 'stub',
+  const label = PURPOSE_LABELS[purpose] || purpose;
+  const body = `Your ${label} verification code is ${code}. Valid for 10 minutes.`;
+
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`[SMS OTP DEV] ${purpose} code for ${phone}: ${code}`);
+  }
+
+  if (!isTwilioConfigured()) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('SMS OTP is not configured. Set Twilio environment variables.');
+    }
+
+    console.log('[SMS OTP DEV] Twilio not configured — using console fallback');
+    return { channel: 'sms', provider: 'dev-console', status: 'dev-console-only' };
+  }
+
+  const result = await sendSms(phone, body);
+
+  return {
+    channel: 'sms',
+    provider: 'twilio',
+    status: result.status,
+    messageSid: result.sid,
   };
-
-  // Stub SMS provider — replace with Jazz/Telenor/Zong API integration
-  console.log('[SMS STUB]', JSON.stringify({ ...payload, code: '[REDACTED]' }));
-  console.log(`[SMS STUB] OTP for ${phone}: ${code}`);
-
-  return { channel: 'sms', provider: payload.provider, status: 'queued' };
 };
 
 const sendEmailOtp = async (email, code, purpose) => {
+  const label = PURPOSE_LABELS[purpose] || purpose;
+
   if (process.env.NODE_ENV !== 'production') {
     console.log(`[EMAIL OTP DEV] ${purpose} code for ${email}: ${code}`);
   }
@@ -73,7 +121,7 @@ const sendEmailOtp = async (email, code, purpose) => {
   try {
     const result = await sendEmail({
       to: email,
-      subject: `Your ${purpose} verification code`,
+      subject: `Your ${label} verification code`,
       text: `Your verification code is ${code}. It expires in 10 minutes.`,
       html: `<p>Your verification code is <strong>${code}</strong>.</p><p>It expires in 10 minutes.</p>`,
     });
@@ -115,15 +163,15 @@ const generateOTP = async (identifier, purpose) => {
 
 const sendOTP = async (identifier, purpose) => {
   const normalized = normalizeIdentifier(identifier);
-
-  if (!isEmail(normalized)) {
-    throw new Error('OTP is only sent via email. Provide a valid email address.');
-  }
-
   const { identifier: resolved, code, expiresAt } = await generateOTP(normalized, purpose);
-  const delivery = await sendEmailOtp(resolved, code, purpose);
+  const channel = getIdentifierChannel(resolved);
 
-  return { identifier: resolved, expiresAt, delivery };
+  const delivery =
+    channel === 'email'
+      ? await sendEmailOtp(resolved, code, purpose)
+      : await sendSmsOtp(resolved, code, purpose);
+
+  return { identifier: resolved, channel, expiresAt, delivery };
 };
 
 const verifyOTP = async (identifier, code, purpose) => {
@@ -170,12 +218,37 @@ const verifyOTP = async (identifier, code, purpose) => {
   return { identifier: normalized, purpose, verified: true };
 };
 
+const getUserOtpTarget = (user) => {
+  if (user.isEmailVerified && user.email) {
+    return { identifier: user.email, channel: 'email' };
+  }
+
+  if (user.isPhoneVerified && user.phone) {
+    return { identifier: user.phone, channel: 'sms' };
+  }
+
+  if (user.email) {
+    return { identifier: user.email, channel: 'email' };
+  }
+
+  if (user.phone) {
+    return { identifier: user.phone, channel: 'sms' };
+  }
+
+  throw new Error('No contact method available for OTP verification');
+};
+
 module.exports = {
   generateOTP,
   sendOTP,
   verifyOTP,
+  getUserOtpTarget,
+  normalizeIdentifier,
+  normalizePhone,
+  isEmail,
   OtpRateLimitError,
   OTP_RATE_LIMIT,
   OTP_RATE_WINDOW_MS,
   MAX_VERIFY_ATTEMPTS,
+  VALID_PURPOSES,
 };

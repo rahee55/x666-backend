@@ -1,14 +1,24 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/Users');
 const Wallet = require('../models/Wallet');
-const { sendOTP, verifyOTP, OtpRateLimitError } = require('../services/otpService');
+const PendingSignup = require('../models/PendingSignup');
+const {
+  sendOTP,
+  verifyOTP,
+  normalizePhone,
+  OtpRateLimitError,
+} = require('../services/otpService');
 const { trackReferral } = require('../services/referralService');
 const { asyncHandler, sendSuccess, sendError } = require('../services/helper');
 const {
   signupSchema,
+  verifySignupOtpSchema,
+  resendSignupOtpSchema,
   loginSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  changePasswordSchema,
+  validateEmailOrPhone,
   validate,
   passwordsMatch,
 } = require('../services/validationSchema');
@@ -34,6 +44,32 @@ const findReferrer = async (referralCode) => {
   return referrer;
 };
 
+const resolveSignupIdentifier = ({ phone, email }) => {
+  const identifierErrors = validateEmailOrPhone({ phone, email }, { requireExactlyOne: true });
+  if (identifierErrors.length) {
+    return { error: identifierErrors.join(', ') };
+  }
+
+  if (email) {
+    return { channel: 'email', identifier: email.trim().toLowerCase() };
+  }
+
+  return { channel: 'sms', identifier: normalizePhone(phone.trim()) };
+};
+
+const resolveAuthIdentifier = ({ phone, email }) => {
+  const identifierErrors = validateEmailOrPhone({ phone, email });
+  if (identifierErrors.length) {
+    return { error: identifierErrors.join(', ') };
+  }
+
+  if (email) {
+    return { channel: 'email', identifier: email.trim().toLowerCase() };
+  }
+
+  return { channel: 'sms', identifier: normalizePhone(phone.trim()) };
+};
+
 const formatUser = (user) => ({
   id: user._id,
   name: user.name,
@@ -46,6 +82,22 @@ const formatUser = (user) => ({
   kycStatus: user.kycStatus,
 });
 
+const savePendingSignup = async ({ identifier, channel, name, password, referralCode, referrer }) => {
+  await PendingSignup.findOneAndUpdate(
+    { identifier },
+    {
+      identifier,
+      channel,
+      name: name.trim(),
+      password,
+      referralCode: referralCode?.trim().toUpperCase() || null,
+      referredBy: referrer?._id || null,
+      expiresAt: PendingSignup.buildExpiry(),
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+};
+
 exports.signup = asyncHandler(async (req, res) => {
   const errors = validate(signupSchema, req.body);
   if (errors.length) return sendError(res, errors.join(', '));
@@ -56,14 +108,18 @@ exports.signup = asyncHandler(async (req, res) => {
     return sendError(res, 'Password and confirm password do not match');
   }
 
-  const normalizedPhone = phone.trim();
-  const normalizedEmail = email.trim().toLowerCase();
+  const resolved = resolveSignupIdentifier({ phone, email });
+  if (resolved.error) return sendError(res, resolved.error);
 
-  const phoneTaken = await User.findOne({ phone: normalizedPhone });
-  if (phoneTaken) return sendError(res, 'Phone already registered', 409);
+  const { identifier, channel } = resolved;
 
-  const emailTaken = await User.findOne({ email: normalizedEmail });
-  if (emailTaken) return sendError(res, 'Email already registered', 409);
+  if (channel === 'email') {
+    const emailTaken = await User.findOne({ email: identifier });
+    if (emailTaken) return sendError(res, 'Email already registered', 409);
+  } else {
+    const phoneTaken = await User.findOne({ phone: identifier });
+    if (phoneTaken) return sendError(res, 'Phone already registered', 409);
+  }
 
   let referrer = null;
   try {
@@ -72,31 +128,125 @@ exports.signup = asyncHandler(async (req, res) => {
     return sendError(res, error.message);
   }
 
-  const user = await User.create({
-    name: name.trim(),
-    phone: normalizedPhone,
-    email: normalizedEmail,
+  await savePendingSignup({
+    identifier,
+    channel,
+    name,
     password,
-    isPhoneVerified: false,
-    isEmailVerified: false,
-    referredBy: referrer?._id || null,
+    referralCode,
+    referrer,
   });
+
+  try {
+    const result = await sendOTP(identifier, 'signup');
+    sendSuccess(res, {
+      message: `Signup details saved. OTP sent to your ${channel === 'email' ? 'email' : 'phone number'}.`,
+      data: {
+        channel: result.channel,
+        identifier: result.identifier,
+        expiresAt: result.expiresAt,
+      },
+    });
+  } catch (error) {
+    return handleOtpError(res, error);
+  }
+});
+
+exports.resendSignupOtp = asyncHandler(async (req, res) => {
+  const errors = validate(resendSignupOtpSchema, req.body);
+  if (errors.length) return sendError(res, errors.join(', '));
+
+  const resolved = resolveSignupIdentifier(req.body);
+  if (resolved.error) return sendError(res, resolved.error);
+
+  const { identifier, channel } = resolved;
+
+  const pending = await PendingSignup.findOne({ identifier }).select('+password');
+  if (!pending) {
+    return sendError(res, 'No pending signup found. Please submit signup details first.', 404);
+  }
+
+  try {
+    const result = await sendOTP(identifier, 'signup');
+    sendSuccess(res, {
+      message: `OTP resent to your ${channel === 'email' ? 'email' : 'phone number'}.`,
+      data: {
+        channel: result.channel,
+        identifier: result.identifier,
+        expiresAt: result.expiresAt,
+      },
+    });
+  } catch (error) {
+    return handleOtpError(res, error);
+  }
+});
+
+exports.verifySignupOtp = asyncHandler(async (req, res) => {
+  const errors = validate(verifySignupOtpSchema, req.body);
+  if (errors.length) return sendError(res, errors.join(', '));
+
+  const { phone, email, code } = req.body;
+
+  const resolved = resolveSignupIdentifier({ phone, email });
+  if (resolved.error) return sendError(res, resolved.error);
+
+  const { identifier, channel } = resolved;
+
+  try {
+    await verifyOTP(identifier, code, 'signup');
+  } catch (error) {
+    return sendError(res, error.message, error.message.includes('attempts exceeded') ? 429 : 400);
+  }
+
+  const pending = await PendingSignup.findOne({ identifier }).select('+password');
+  if (!pending) {
+    return sendError(res, 'Signup session expired. Please submit signup details again.', 404);
+  }
+
+  if (channel === 'email') {
+    const emailTaken = await User.findOne({ email: identifier });
+    if (emailTaken) return sendError(res, 'Email already registered', 409);
+  } else {
+    const phoneTaken = await User.findOne({ phone: identifier });
+    if (phoneTaken) return sendError(res, 'Phone already registered', 409);
+  }
+
+  const userPayload = {
+    name: pending.name,
+    password: pending.password,
+    referredBy: pending.referredBy,
+  };
+
+  if (channel === 'email') {
+    userPayload.email = identifier;
+    userPayload.isEmailVerified = true;
+  } else {
+    userPayload.phone = identifier;
+    userPayload.isPhoneVerified = true;
+  }
+
+  const user = await User.create(userPayload);
 
   await Wallet.create({ userId: user._id, balance: 0, lockedBalance: 0 });
 
-  if (referrer) {
-    await trackReferral(referrer._id, user._id);
+  if (pending.referredBy) {
+    await trackReferral(pending.referredBy, user._id);
   }
 
-  const token = signToken(user._id);
+  await PendingSignup.deleteOne({ identifier });
 
-  sendSuccess(res, {
-    message: 'Account created successfully',
-    data: {
-      token,
-      user: formatUser(user),
+  sendSuccess(
+    res,
+    {
+      message: 'OTP verified and account created successfully. Please login to continue.',
+      data: {
+        channel,
+        identifier,
+        user: formatUser(user),
+      },
     },
-  }, 201);
+    201
+  );
 });
 
 exports.login = asyncHandler(async (req, res) => {
@@ -109,7 +259,9 @@ exports.login = asyncHandler(async (req, res) => {
     return sendError(res, 'Phone or email is required');
   }
 
-  const query = phone ? { phone: phone.trim() } : { email: email.trim().toLowerCase() };
+  const query = phone
+    ? { phone: normalizePhone(phone.trim()) }
+    : { email: email.trim().toLowerCase() };
   const user = await User.findOne(query).select('+password');
 
   if (!user || !(await user.comparePassword(password))) {
@@ -140,18 +292,21 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
   const errors = validate(forgotPasswordSchema, req.body);
   if (errors.length) return sendError(res, errors.join(', '));
 
-  const { email } = req.body;
+  const resolved = resolveAuthIdentifier(req.body);
+  if (resolved.error) return sendError(res, resolved.error);
 
-  const genericMessage = 'If an account exists, an OTP has been sent to your email.';
+  const { identifier, channel } = resolved;
+  const genericMessage = `If an account exists, an OTP has been sent to your ${channel === 'email' ? 'email' : 'phone number'}.`;
 
-  const user = await User.findOne({ email: email.trim().toLowerCase() });
+  const query = channel === 'email' ? { email: identifier } : { phone: identifier };
+  const user = await User.findOne(query);
 
-  if (!user || !user.email) {
+  if (!user) {
     return sendSuccess(res, { message: genericMessage });
   }
 
   try {
-    await sendOTP(user.email, 'reset_password');
+    await sendOTP(identifier, 'reset_password');
   } catch (error) {
     return handleOtpError(res, error);
   }
@@ -159,8 +314,8 @@ exports.forgotPassword = asyncHandler(async (req, res) => {
   sendSuccess(res, {
     message: genericMessage,
     data: {
-      channel: 'email',
-      identifier: user.email,
+      channel,
+      identifier,
     },
   });
 });
@@ -169,21 +324,25 @@ exports.resetPassword = asyncHandler(async (req, res) => {
   const errors = validate(resetPasswordSchema, req.body);
   if (errors.length) return sendError(res, errors.join(', '));
 
-  const { email, code, newPassword, confirmPassword } = req.body;
+  const { phone, email, code, newPassword, confirmPassword } = req.body;
 
   if (!passwordsMatch(newPassword, confirmPassword)) {
     return sendError(res, 'Password and confirm password do not match');
   }
 
-  const normalizedEmail = email.trim().toLowerCase();
+  const resolved = resolveAuthIdentifier({ phone, email });
+  if (resolved.error) return sendError(res, resolved.error);
+
+  const { identifier, channel } = resolved;
 
   try {
-    await verifyOTP(normalizedEmail, code, 'reset_password');
+    await verifyOTP(identifier, code, 'reset_password');
   } catch (error) {
     return sendError(res, error.message, error.message.includes('attempts exceeded') ? 429 : 400);
   }
 
-  const user = await User.findOne({ email: normalizedEmail }).select('+password');
+  const query = channel === 'email' ? { email: identifier } : { phone: identifier };
+  const user = await User.findOne(query).select('+password');
   if (!user) {
     return sendError(res, 'User not found', 404);
   }
@@ -196,5 +355,36 @@ exports.resetPassword = asyncHandler(async (req, res) => {
   sendSuccess(res, {
     message: 'Password reset successful',
     data: { token, user: formatUser(user) },
+  });
+});
+
+exports.changePassword = asyncHandler(async (req, res) => {
+  const errors = validate(changePasswordSchema, req.body);
+  if (errors.length) return sendError(res, errors.join(', '));
+
+  const { currentPassword, newPassword, confirmPassword } = req.body;
+
+  if (!passwordsMatch(newPassword, confirmPassword)) {
+    return sendError(res, 'New password and confirm password do not match');
+  }
+
+  if (currentPassword === newPassword) {
+    return sendError(res, 'New password must be different from current password');
+  }
+
+  const user = await User.findById(req.user._id).select('+password');
+  if (!user) {
+    return sendError(res, 'User not found', 404);
+  }
+
+  if (!(await user.comparePassword(currentPassword))) {
+    return sendError(res, 'Current password is incorrect', 401);
+  }
+
+  user.password = newPassword;
+  await user.save();
+
+  sendSuccess(res, {
+    message: 'Password changed successfully',
   });
 });

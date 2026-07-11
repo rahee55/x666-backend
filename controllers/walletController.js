@@ -27,11 +27,20 @@ const {
 } = require('../services/paymentService');
 const {
   topupSchema,
+  walletOtpSchema,
   validateWithdrawDetails,
   validate,
 } = require('../services/validationSchema');
 const { getWithdrawEligibility, assertWithdrawAllowed } = require('../services/spinService');
+const { sendOTP, verifyOTP, getUserOtpTarget, OtpRateLimitError } = require('../services/otpService');
 const { asyncHandler, sendSuccess, sendError } = require('../services/helper');
+
+const handleOtpError = (res, error) => {
+  if (error instanceof OtpRateLimitError || error.code === 'OTP_RATE_LIMIT') {
+    return sendError(res, error.message, error.status || 429);
+  }
+  return sendError(res, error.message);
+};
 
 const resolveWithdrawDestination = ({ gateway, accountNumber, iban }) => {
   if (gateway === 'bank') {
@@ -266,13 +275,51 @@ exports.getTransactions = asyncHandler(async (req, res) => {
   });
 });
 
+exports.sendOtp = asyncHandler(async (req, res) => {
+  const errors = validate(walletOtpSchema, req.body);
+  if (errors.length) return sendError(res, errors.join(', '));
+
+  const { purpose } = req.body;
+
+  let target;
+  try {
+    target = getUserOtpTarget(req.user);
+  } catch (error) {
+    return sendError(res, error.message);
+  }
+
+  try {
+    const result = await sendOTP(target.identifier, purpose);
+    sendSuccess(res, {
+      message: `OTP sent to your ${result.channel === 'email' ? 'email' : 'phone number'}.`,
+      data: {
+        purpose,
+        channel: result.channel,
+        identifier: result.identifier,
+        expiresAt: result.expiresAt,
+      },
+    });
+  } catch (error) {
+    return handleOtpError(res, error);
+  }
+});
+
 exports.topup = asyncHandler(async (req, res) => {
   const errors = validate(topupSchema, req.body);
   if (errors.length) return sendError(res, errors.join(', '));
 
-  const { amount } = req.body;
+  const { amount, code } = req.body;
   if (amount < MIN_TOPUP) {
     return sendError(res, `Minimum top-up is ${MIN_TOPUP}`);
+  }
+
+  let target;
+  try {
+    target = getUserOtpTarget(req.user);
+    await verifyOTP(target.identifier, code, 'topup');
+  } catch (error) {
+    const status = error.message.includes('attempts exceeded') ? 429 : 400;
+    return sendError(res, error.message, status);
   }
 
   const collection = await initiateCollection(amount, req.user._id);
@@ -385,8 +432,17 @@ exports.withdraw = asyncHandler(async (req, res) => {
   const errors = validateWithdrawDetails(req.body);
   if (errors.length) return sendError(res, errors.join(', '));
 
-  const { amount, gateway, accountNumber, iban, accountTitle } = req.body;
+  const { amount, gateway, accountNumber, iban, accountTitle, code } = req.body;
   const destinationAccount = resolveWithdrawDestination({ gateway, accountNumber, iban });
+
+  let target;
+  try {
+    target = getUserOtpTarget(req.user);
+    await verifyOTP(target.identifier, code, 'withdraw');
+  } catch (error) {
+    const status = error.message.includes('attempts exceeded') ? 429 : 400;
+    return sendError(res, error.message, status);
+  }
 
   if (amount < MIN_WITHDRAW) {
     return sendError(res, `Minimum withdrawal is ${MIN_WITHDRAW}`);
