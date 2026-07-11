@@ -254,7 +254,7 @@ Destroys server session if present. Client must delete the stored JWT — tokens
 
 #### `POST /api/auth/forgot-password`
 
-Rate limit: `otpLimiter` (5 / min)
+Rate limit: `otpLimiter` (5 / mins)
 
 **Request** — phone **or** email (one required):
 ```json
