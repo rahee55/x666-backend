@@ -1,7 +1,7 @@
 # x666-backend — Project Audit
 
 > Readable reference for the trimmed codebase.  
-> Updated: 2026-07-07 · Base URL: `http://localhost:3001/api`
+> Updated: 2026-07-11 · Base URL: `http://localhost:3001/api`
 
 ---
 
@@ -9,17 +9,19 @@
 
 Referral-driven **spin & wallet** backend:
 
-1. **Signup** → email → account + wallet created (optional referral code)
+1. **Signup** → three steps — (1) submit **name + email or phone + password**, server sends OTP, (2) verify OTP, (3) **login** separately
 2. **Login** → JWT token · **Logout** → clear session, client discards JWT
 3. **Spin** → **one spin per user (lifetime)**; weighted wheel — only **50 (85%)** or **100 (15%)** can win
 4. **Referrals** → share link; 50 qualifying referrals → **1000 PKR** bonus
-5. **Wallet** → Safepay top-up (auto-reconcile on poll); Safepay withdraw via **bank / JazzCash / EasyPaisa** (first spin required)
+5. **Wallet** → Safepay top-up (OTP + auto-reconcile on poll); Safepay withdraw via **bank / JazzCash / EasyPaisa** (OTP + first spin required)
 
-**OTP policy:** All OTPs are sent **via email only** (Nodemailer). SMS is not used.
+**OTP policy:** OTP is required for **signup**, **top-up**, **withdraw**, and **forgot / reset password**. Delivery channel matches the user’s registered contact:
+- **Email** → Nodemailer (SMTP / Ethereal in dev)
+- **Phone** → Twilio SMS
 
 **Withdraw rule:** User must complete their **first (lifetime) spin** before withdraw is allowed.
 
-**Top-up rule:** No manual confirm — poll `GET /wallet/topup/status/:orderId` or refresh balance/transactions after Safepay checkout.
+**Top-up rule:** Request OTP via `POST /wallet/send-otp`, then submit top-up with `code`. No manual confirm — poll `GET /wallet/topup/status/:orderId` or refresh balance/transactions after Safepay checkout.
 
 ---
 
@@ -75,25 +77,34 @@ No auth. No body.
 
 #### `POST /api/auth/signup`
 
-Rate limit: `authLimiter` (20 / 15 min) + `otpLimiter` (5 / min) — OTP **send** only
+Rate limit: `authLimiter` (20 / 15 min). **Step 1 of signup** — submit registration details; server saves a pending signup and **sends OTP** to the email or phone provided.
 
-**Request**
+**Request — phone signup**
 ```json
 {
   "name": "Bilal Ahmad",
   "phone": "03001234567",
-  "email": "user@example.com",
   "password": "secret123",
   "confirmPassword": "secret123",
   "referralCode": "ABC12345"
 }
 ```
 
+**Request — email signup**
+```json
+{
+  "name": "Bilal Ahmad",
+  "email": "user@example.com",
+  "password": "secret123",
+  "confirmPassword": "secret123"
+}
+```
+
 | Field | Required | Notes |
 |-------|----------|-------|
 | `name` | yes | min 2 chars |
-| `phone` | yes | unique |
-| `email` | yes | unique · OTP sent here |
+| `phone` | one of phone/email | unique; OTP sent here |
+| `email` | one of phone/email | unique; OTP sent here |
 | `password` | yes | min 6 chars |
 | `confirmPassword` | yes | must match password |
 | `referralCode` | no | must exist if provided |
@@ -102,54 +113,74 @@ Rate limit: `authLimiter` (20 / 15 min) + `otpLimiter` (5 / min) — OTP **send*
 ```json
 {
   "success": true,
-  "message": "OTP sent to your email. Complete signup via /verify-otp.",
+  "message": "Signup details saved. OTP sent to your email.",
   "data": {
-    "phone": "03001234567",
-    "email": "user@example.com",
-    "otpSentTo": ["email"],
-    "verifyWith": "email",
-    "devHint": "Check your email inbox for the OTP code.",
-    "emailPreviewUrl": "https://ethereal.email/message/..."
+    "channel": "email",
+    "identifier": "user@example.com",
+    "expiresAt": "2026-07-11T07:43:00.000Z"
   }
 }
 ```
 
-`emailPreviewUrl` and `devHint` only appear in development. In dev, if Gmail is not configured, check terminal for `[EMAIL OTP DEV]` or Ethereal preview URL.
+**Errors:** `400` validation · `409` phone/email already registered · `429` OTP rate limit
 
-**Errors:** `400` validation · `409` phone/email taken · `429` OTP limit
+**Next step:** `POST /api/auth/verify-signup-otp` with the same email/phone + OTP `code`.
 
 ---
 
-#### `POST /api/auth/verify-otp`
+#### `POST /api/auth/resend-signup-otp`
 
-No OTP rate limit (verify only — wrong-code attempts capped in `otpService`)
+Rate limit: `otpLimiter` (5 / min). Resend signup OTP if step 1 was already submitted.
 
-**Request** — same fields as signup, plus OTP:
+**Request**
 ```json
 {
-  "name": "Bilal Ahmad",
-  "phone": "03001234567",
-  "email": "user@example.com",
-  "password": "secret123",
-  "confirmPassword": "secret123",
-  "code": "482910",
-  "referralCode": "ABC12345"
+  "email": "user@example.com"
 }
 ```
 
-Use the **email OTP** in `code`. Phone is stored but not verified via OTP.
+**Errors:** `404` no pending signup for this identifier
+
+---
+
+#### `POST /api/auth/verify-signup-otp`
+
+Rate limit: `authLimiter` (20 / 15 min). **Step 2 of signup** — verify OTP only (no password in this request). Creates account + wallet. **Does not return a JWT**.
+
+**Request — phone**
+```json
+{
+  "phone": "03001234567",
+  "code": "482910"
+}
+```
+
+**Request — email**
+```json
+{
+  "email": "user@example.com",
+  "code": "482910"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `phone` | one of phone/email | same as step 1 |
+| `email` | one of phone/email | same as step 1 |
+| `code` | yes | OTP received after signup |
 
 **Response 201**
 ```json
 {
   "success": true,
-  "message": "Account created successfully",
+  "message": "OTP verified and account created successfully. Please login to continue.",
   "data": {
-    "token": "eyJhbGciOiJIUzI1NiIs...",
+    "channel": "email",
+    "identifier": "user@example.com",
     "user": {
       "id": "665a1b2c3d4e5f6789012345",
       "name": "Bilal Ahmad",
-      "phone": "03001234567",
+      "phone": null,
       "email": "user@example.com",
       "isPhoneVerified": false,
       "isEmailVerified": true,
@@ -161,13 +192,15 @@ Use the **email OTP** in `code`. Phone is stored but not verified via OTP.
 }
 ```
 
-**Errors:** `400` bad OTP · `409` already registered · `429` too many attempts
+**Errors:** `400` bad OTP · `404` pending signup expired · `409` phone/email taken · `429` too many verify attempts
+
+**Next step:** `POST /api/auth/login` with the same phone/email + password from step 1.
 
 ---
 
 #### `POST /api/auth/login`
 
-Rate limit: `authLimiter`
+Rate limit: `authLimiter`. **Step 3 of signup** — obtain JWT after account is created via `verify-signup-otp`.
 
 **Request** — phone **or** email (one required):
 ```json
@@ -221,12 +254,17 @@ Destroys server session if present. Client must delete the stored JWT — tokens
 
 #### `POST /api/auth/forgot-password`
 
-Rate limit: `otpLimiter` (5 / min) — OTP send
+Rate limit: `otpLimiter` (5 / mins)
 
-**Request** — email required:
+**Request** — phone **or** email (one required):
 ```json
 {
   "email": "user@example.com"
+}
+```
+```json
+{
+  "phone": "03001234567"
 }
 ```
 
@@ -242,16 +280,26 @@ Rate limit: `otpLimiter` (5 / min) — OTP send
 }
 ```
 
+OTP is sent via **email (Nodemailer)** or **SMS (Twilio)** depending on the identifier provided.
+
 ---
 
 #### `POST /api/auth/reset-password`
 
-No OTP rate limit (verify only)
+Requires OTP from forgot-password flow.
 
-**Request** — email required:
+**Request** — phone **or** email (same identifier used in forgot-password):
 ```json
 {
   "email": "user@example.com",
+  "code": "482910",
+  "newPassword": "newsecret123",
+  "confirmPassword": "newsecret123"
+}
+```
+```json
+{
+  "phone": "03001234567",
   "code": "482910",
   "newPassword": "newsecret123",
   "confirmPassword": "newsecret123"
@@ -270,7 +318,38 @@ No OTP rate limit (verify only)
 }
 ```
 
-**Errors:** `400` · `404` user not found · `429`
+**Errors:** `400` bad OTP · `404` user not found · `429` too many verify attempts
+
+---
+
+#### `POST /api/auth/change-password`
+
+Requires JWT. Changes password for the logged-in user (no OTP — uses current password).
+
+**Request**
+```json
+{
+  "currentPassword": "secret123",
+  "newPassword": "newsecret456",
+  "confirmPassword": "newsecret456"
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|-------|
+| `currentPassword` | yes | must match existing password |
+| `newPassword` | yes | min 6 chars, must differ from current |
+| `confirmPassword` | yes | must match newPassword |
+
+**Response 200**
+```json
+{
+  "success": true,
+  "message": "Password changed successfully"
+}
+```
+
+**Errors:** `400` validation · `401` wrong current password or missing JWT
 
 ---
 
@@ -533,36 +612,46 @@ Requires JWT. **Auto-reconciles** pending top-ups. Top-up rows with DB status `s
 
 ---
 
-#### `POST /api/wallet/topup`
+#### `POST /api/wallet/send-otp`
 
-Requires JWT · rate limit: `otpLimiter` (5 / min) — OTP **send** only
+Requires JWT · Rate limit: `otpLimiter` (5 / min)
+
+Sends OTP to the user’s **verified signup channel** (email or phone).
 
 **Request**
 ```json
 {
-  "amount": 500
+  "purpose": "topup"
 }
 ```
 
-Minimum: `100` (`MIN_TOPUP`)
+| Field | Required | Notes |
+|-------|----------|-------|
+| `purpose` | yes | `topup` or `withdraw` |
 
 **Response 200**
 ```json
 {
   "success": true,
-  "message": "OTP sent. Complete top-up via /wallet/topup/verify.",
+  "message": "OTP sent to your phone number.",
   "data": {
-    "amount": 500,
-    "otpSentTo": "email"
+    "purpose": "topup",
+    "channel": "sms",
+    "identifier": "+923001234567",
+    "expiresAt": "2026-07-11T07:43:00.000Z"
   }
 }
 ```
 
+**Errors:** `400` invalid purpose · `429` OTP rate limit
+
 ---
 
-#### `POST /api/wallet/topup/verify`
+#### `POST /api/wallet/topup`
 
-Requires JWT · **no OTP rate limit** (verify only)
+Requires JWT · **OTP required**. Creates Safepay checkout after OTP verification.
+
+**Flow:** `POST /wallet/send-otp` with `"purpose": "topup"` → then top-up with `code`.
 
 **Request**
 ```json
@@ -572,11 +661,18 @@ Requires JWT · **no OTP rate limit** (verify only)
 }
 ```
 
+| Field | Required | Notes |
+|-------|----------|-------|
+| `amount` | yes | min `100` (`MIN_TOPUP`) |
+| `code` | yes | OTP from `send-otp` |
+
+Minimum: `100` (`MIN_TOPUP`)
+
 **Response 200**
 ```json
 {
   "success": true,
-  "message": "Safepay sandbox checkout session created",
+  "message": "Safepay checkout session created",
   "data": {
     "orderId": "TOPUP-665a-1234567890",
     "tracker": "safepay_tracker",
@@ -628,14 +724,17 @@ Requires JWT. Same response shape as `topup/status/:orderId`, keyed by MongoDB t
 
 #### `POST /api/wallet/withdraw`
 
-Requires JWT · rate limit: `otpLimiter` (5 / min) · **requires first spin completed**
+Requires JWT · **OTP required** · **requires first spin completed**
+
+**Flow:** `POST /wallet/send-otp` with `"purpose": "withdraw"` → then withdraw with `code`.
 
 **Request — JazzCash / EasyPaisa**
 ```json
 {
   "amount": 500,
   "gateway": "jazzcash",
-  "accountNumber": "03001234567"
+  "accountNumber": "03001234567",
+  "code": "482910"
 }
 ```
 
@@ -645,7 +744,8 @@ Requires JWT · rate limit: `otpLimiter` (5 / min) · **requires first spin comp
   "amount": 500,
   "gateway": "bank",
   "iban": "PK00XXXX0000000000000000",
-  "accountTitle": "Bilal Ahmad"
+  "accountTitle": "Bilal Ahmad",
+  "code": "482910"
 }
 ```
 
@@ -653,44 +753,10 @@ Requires JWT · rate limit: `otpLimiter` (5 / min) · **requires first spin comp
 |-------|----------|-------|
 | `amount` | yes | min `100` |
 | `gateway` | yes | `bank` · `jazzcash` · `easypaisa` |
+| `code` | yes | OTP from `send-otp` |
 | `accountNumber` | for wallets | JazzCash / EasyPaisa mobile number |
 | `iban` | for bank | Pakistani IBAN |
 | `accountTitle` | no | optional bank account name |
-
-**Response 200**
-```json
-{
-  "success": true,
-  "message": "OTP sent. Complete withdrawal via /wallet/withdraw/verify.",
-  "data": {
-    "amount": 500,
-    "gateway": "jazzcash",
-    "destinationAccount": "03001234567",
-    "accountNumber": "03001234567",
-    "iban": null,
-    "otpSentTo": "email",
-    "withdrawMode": "sandbox_auto"
-  }
-}
-```
-
-**Errors:** `402` insufficient balance · `403` first spin not done · `429` OTP send limit
-
----
-
-#### `POST /api/wallet/withdraw/verify`
-
-Requires JWT · **no OTP rate limit** · **requires first spin completed**
-
-**Request**
-```json
-{
-  "amount": 500,
-  "gateway": "jazzcash",
-  "accountNumber": "03001234567",
-  "code": "482910"
-}
-```
 
 **Response 200** (sandbox — instant)
 ```json
@@ -737,6 +803,8 @@ Requires JWT · **no OTP rate limit** · **requires first spin completed**
   }
 }
 ```
+
+**Errors:** `402` insufficient balance · `403` first spin not done
 
 ---
 
@@ -946,16 +1014,34 @@ No body. Pays when ≥ 50 qualifying referrals are eligible.
 ```json
 {
   "name": "string",
-  "phone": "string (unique)",
-  "email": "string (unique, required)",
+  "phone": "string (unique, sparse) — E.164 when set",
+  "email": "string (unique, sparse, lowercase) — when set",
   "password": "hashed, hidden from queries",
-  "isPhoneVerified": false,
-  "isEmailVerified": true,
+  "isPhoneVerified": "true if signed up via phone OTP",
+  "isEmailVerified": "true if signed up via email OTP",
   "referralCode": "auto-generated, unique",
   "referredBy": "ObjectId → User",
   "totalReferrals": 0,
   "kycStatus": "pending | submitted | approved | rejected",
   "createdAt": "Date"
+}
+```
+
+At least **one** of `phone` or `email` is required. Signup accepts only one identifier; the matching verification flag is set to `true`.
+
+### PendingSignup — `models/PendingSignup.js`
+
+Temporary storage between `POST /auth/signup` and `POST /auth/verify-signup-otp`. Auto-deleted after 15 minutes or when account is created.
+
+```json
+{
+  "identifier": "email or E.164 phone (unique)",
+  "channel": "email | sms",
+  "name": "string",
+  "password": "plain text until User.create (select: false)",
+  "referralCode": "string | null",
+  "referredBy": "ObjectId → User | null",
+  "expiresAt": "15 min TTL"
 }
 ```
 
@@ -991,14 +1077,16 @@ No body. Pays when ≥ 50 qualifying referrals are eligible.
 
 ```json
 {
-  "identifier": "email address",
+  "identifier": "email address or E.164 phone",
   "code": "hashed",
-  "purpose": "signup | topup | withdraw | login | reset_password",
+  "purpose": "signup | reset_password | topup | withdraw",
   "expiresAt": "10 min TTL",
   "attempts": 0,
   "verified": false
 }
 ```
+
+OTP delivery: email → Nodemailer · phone → Twilio SMS.
 
 ### SpinHistory — `models/SpinHistory.js`
 
@@ -1046,13 +1134,13 @@ No body. Pays when ≥ 50 qualifying referrals are eligible.
 
 | Limiter | Window | Max | Used on |
 |---------|--------|-----|---------|
-| `authLimiter` | 15 min | 20 | signup, login |
-| `otpLimiter` | 1 min | 5 | OTP **send** only: signup, forgot-password, wallet topup, wallet withdraw |
+| `authLimiter` | 15 min | 20 | signup, verify-signup-otp, login |
+| `otpLimiter` | 1 min | 5 | `POST /auth/resend-signup-otp`, `POST /auth/forgot-password`, `POST /wallet/send-otp` |
 | `spinLimiter` | 1 min | 10 | POST /spin/spin |
 
-OTP verify routes (`verify-otp`, `reset-password`, `topup/verify`, `withdraw/verify`) are **not** rate-limited by `otpLimiter`. Wrong-code attempts are capped inside `otpService` (5 tries per OTP).
+OTP verify (wrong-code attempts) is capped inside `otpService` (5 tries per OTP record).
 
-**OTP limit response (429):**
+**OTP limit response (429)**:
 ```json
 {
   "message": "Too many OTP requests. Please try again in 10 minutes."
@@ -1088,6 +1176,18 @@ OTP verify routes (`verify-otp`, `reset-password`, `topup/verify`, `withdraw/ver
 | `SMTP_PASS` | Gmail App Password (16 chars, no spaces) |
 | `SMTP_FROM` | Sender display, e.g. `x666 <you@gmail.com>` |
 
+### Twilio (SMS OTP) env vars
+
+| Variable | Purpose |
+|----------|---------|
+| `TWILIO_ACCOUNT_SID` | Twilio account SID |
+| `TWILIO_AUTH_TOKEN` | Twilio auth token |
+| `TWILIO_PHONE_NUMBER` | Sender number in E.164, e.g. `+14155551234` |
+
+If Twilio is not configured in **development**, phone OTP codes are logged to the console. In **production**, Twilio must be configured or phone OTP will fail.
+
+Copy `.env.example` to `.env` and fill in values for local setup.
+
 ---
 
 ## File guide
@@ -1099,8 +1199,9 @@ Every active file in the trimmed project and what it does.
 | File | Purpose |
 |------|---------|
 | `app.js` | Express entry: CORS, JSON parser, session, mounts `/api` routes, global error handler |
+| `.env.example` | Template env vars (copy to `.env` for local setup) |
 | `dev-memory.js` | Local dev helper — spins up in-memory MongoDB and sets `MONGODB_URI` |
-| `package.json` | Dependencies: express, mongoose, jwt, bcrypt, nodemailer, `@sfpy/node-core`, rate-limit |
+| `package.json` | Dependencies: express, mongoose, jwt, bcrypt, nodemailer, twilio, `@sfpy/node-core`, rate-limit |
 | `docker-compose.yml` | Optional MongoDB container for local dev |
 | `nodemon.json` | Watches `.env` and source folders for auto-restart |
 
@@ -1113,6 +1214,7 @@ Every active file in the trimmed project and what it does.
 | `withdrawMethods.js` | Safepay withdraw method definitions (bank, jazzcash, easypaisa) |
 | `mongoose.js` | Connects to MongoDB via `MONGODB_URI` |
 | `email.js` | Nodemailer — Gmail SMTP or Ethereal dev test inbox |
+| `twilio.js` | Twilio SMS client for phone OTP |
 | `session.js` | Express session config using `SESSION_SECRET` |
 
 ### Routes — `routes/`
@@ -1120,9 +1222,9 @@ Every active file in the trimmed project and what it does.
 | File | Purpose |
 |------|---------|
 | `index.js` | Main router — mounts auth, users, wallet, spin, referrals + health + referral-link |
-| `authRoutes.js` | Signup, verify-otp, login, logout, forgot/reset password |
+| `authRoutes.js` | Signup (sends OTP), resend signup OTP, verify signup OTP, login, logout, forgot/reset/change password |
 | `userRoutes.js` | GET/PUT profile |
-| `walletRoutes.js` | Balance, transactions, topup/withdraw flows, Safepay callbacks, payment-config |
+| `walletRoutes.js` | Balance, transactions, send-otp, topup/withdraw (OTP), Safepay callbacks, payment-config |
 | `spinRoutes.js` | Spin, history, result by id |
 | `referralRoutes.js` | List referrals, stats, claim bonus |
 
@@ -1130,9 +1232,9 @@ Every active file in the trimmed project and what it does.
 
 | File | Purpose |
 |------|---------|
-| `authController.js` | Signup email OTP flow, login JWT, logout, password reset |
+| `authController.js` | Signup + OTP send, verify signup OTP (no JWT), login JWT, logout, forgot/reset/change password |
 | `userController.js` | Profile CRUD, referral link generation |
-| `walletController.js` | Top-up OTP → Safepay checkout → auto-reconcile; Safepay withdraw (bank/wallets) |
+| `walletController.js` | Wallet send-otp; top-up → Safepay checkout → auto-reconcile; Safepay withdraw (bank/wallets) |
 | `spinController.js` | Execute spin, record history, referral qualifying spin, expose `canWithdraw` |
 | `referralController.js` | List referrals, stats, claim 50-referral bonus |
 
@@ -1149,10 +1251,11 @@ Every active file in the trimmed project and what it does.
 
 | File | Purpose |
 |------|---------|
-| `Users.js` | User account, password hashing, referral code auto-gen |
+| `Users.js` | User account (email **or** phone), password hashing, referral code auto-gen |
 | `Wallet.js` | Balance + locked balance per user |
 | `Transaction.js` | Ledger: topup, withdraw, spin, referral bonus |
-| `OTP.js` | Hashed OTP records with TTL and attempt tracking |
+| `PendingSignup.js` | Temporary signup data (name, password) until OTP verified — 15 min TTL |
+| `OTP.js` | Hashed OTP records — purposes: signup, reset_password, topup, withdraw |
 | `SpinHistory.js` | Per-spin results; used to enforce one-time lifetime spin limit |
 | `Referral.js` | Referrer ↔ referred user link and bonus eligibility |
 
@@ -1160,7 +1263,7 @@ Every active file in the trimmed project and what it does.
 
 | File | Purpose |
 |------|---------|
-| `otpService.js` | Generate, hash, send (email-only via Nodemailer), verify OTP |
+| `otpService.js` | Generate, hash, send (email + Twilio SMS), verify OTP for all purposes |
 | `walletService.js` | Atomic credit/debit, complete topup, auto-reconcile pending topups, withdraw queues |
 | `spinService.js` | Weighted slot picker, lifetime spin limit, first-spin withdraw gate |
 | `referralService.js` | Track referrals, mark qualifying spin, pay 50-referral bonus |
@@ -1175,26 +1278,29 @@ Every active file in the trimmed project and what it does.
 
 ### Fully working
 
-- Two-step signup with **email-only** OTP
-- JWT login, **logout**, forgot/reset password (email OTP)
-- OTP rate limit on **send only** (5 / min); verify routes unrestricted
+- Three-step signup: submit details → OTP sent → verify OTP + create account (**no auto-login**) → login for JWT
+- JWT login, **logout**, forgot/reset password (**email or phone OTP**)
+- **Change password** (logged in, current password required)
+- OTP rate limit on send endpoints (5 / min)
 - Profile + referral share link
 - Weighted spin with **one-time lifetime limit**; unlocks withdraw (`canWithdraw`)
 - Referral chain + 50-referral bonus payout
+- Wallet **send-otp** + OTP-gated top-up and withdraw
 - Safepay top-up with signed callback + **auto-reconcile** on poll/balance/transactions
 - Top-up API returns `"status": "paid"` when complete (no manual confirm)
 - Safepay withdraw via **bank (IBAN)**, **JazzCash**, **EasyPaisa**
 - Sandbox instant withdraw (`SAFEPAY_WITHDRAW_MODE=sandbox_auto`)
-- Withdraw email OTP + manual-review queue + locked balance (production manual mode)
+- Manual-review queue + locked balance in production manual mode
 - Raast bank payout when aggregator creds configured
 - Transaction ledger
 - Nodemailer email delivery (Gmail or Ethereal dev mode)
+- Twilio SMS OTP (console fallback in dev when Twilio unset)
 
 ### Stubbed / incomplete
 
 | Item | Detail |
 |------|--------|
-| SMS OTP | Not used — all OTPs are email-only |
+| Twilio in production | Must set `TWILIO_*` env vars; dev falls back to console |
 | JazzCash / EasyPaisa live API | Config exists; payouts use Safepay sandbox or manual queue |
 | Admin withdraw | No route to approve/reject `pending_manual_review` |
 | KYC | Field on User model only — no workflow |
@@ -1204,6 +1310,18 @@ Every active file in the trimmed project and what it does.
 
 ---
 
+## OTP flows (2026-07-11)
 
+| Action | Endpoints | Notes |
+|--------|-----------|-------|
+| Signup | `POST /auth/signup` → `POST /auth/verify-signup-otp` → `POST /auth/login` | Signup sends OTP; verify creates account; login returns JWT |
+| Top-up | `POST /wallet/send-otp` (`purpose: topup`) → `POST /wallet/topup` | OTP sent to signup channel |
+| Withdraw | `POST /wallet/send-otp` (`purpose: withdraw`) → `POST /wallet/withdraw` | OTP + first spin required |
+| Forgot password | `POST /auth/forgot-password` → `POST /auth/reset-password` | Email or phone OTP |
+| Change password | `POST /auth/change-password` | JWT + current password (no OTP) |
+
+**Removed (2026-07-10, superseded):** `POST /auth/verify-otp`, `POST /wallet/topup/verify`, `POST /wallet/withdraw/verify`, `POST /wallet/topup/confirm`
+
+---
 
 *End of audit.*

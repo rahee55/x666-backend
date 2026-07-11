@@ -21,11 +21,10 @@ router.get('/transactions', walletController.getTransactions);
 router.get('/topup/status/:orderId', walletController.getTopupStatus);
 router.get('/topup/transaction/:id', walletController.getTopupStatusById);
 
-router.post('/topup', otpLimiter, walletController.topup);
-router.post('/topup/verify', walletController.topupVerify);
+router.post('/send-otp', otpLimiter, walletController.sendOtp);
+router.post('/topup', walletController.topup);
 
-router.post('/withdraw', otpLimiter, walletController.withdraw);
-router.post('/withdraw/verify', walletController.withdrawVerify);
+router.post('/withdraw', walletController.withdraw);
 router.get('/withdraw/status/:id', walletController.getWithdrawStatus);
 
 module.exports = router;

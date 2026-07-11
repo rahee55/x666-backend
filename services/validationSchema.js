@@ -1,20 +1,21 @@
 const signupSchema = {
   name: { required: true, type: 'string', minLength: 2 },
-  phone: { required: true, type: 'string' },
-  email: { required: true, type: 'string' },
+  phone: { type: 'string' },
+  email: { type: 'string' },
   password: { required: true, type: 'string', minLength: 6 },
   confirmPassword: { required: true, type: 'string', minLength: 6 },
   referralCode: { type: 'string' },
 };
 
-const verifySignupSchema = {
-  name: { required: true, type: 'string', minLength: 2 },
-  phone: { required: true, type: 'string' },
-  email: { required: true, type: 'string' },
-  password: { required: true, type: 'string', minLength: 6 },
-  confirmPassword: { required: true, type: 'string', minLength: 6 },
+const verifySignupOtpSchema = {
+  phone: { type: 'string' },
+  email: { type: 'string' },
   code: { required: true, type: 'string' },
-  referralCode: { type: 'string' },
+};
+
+const resendSignupOtpSchema = {
+  phone: { type: 'string' },
+  email: { type: 'string' },
 };
 
 const loginSchema = {
@@ -24,21 +25,29 @@ const loginSchema = {
 };
 
 const forgotPasswordSchema = {
-  email: { required: true, type: 'string' },
+  phone: { type: 'string' },
+  email: { type: 'string' },
 };
 
 const resetPasswordSchema = {
-  email: { required: true, type: 'string' },
+  phone: { type: 'string' },
+  email: { type: 'string' },
   code: { required: true, type: 'string' },
   newPassword: { required: true, type: 'string', minLength: 6 },
   confirmPassword: { required: true, type: 'string', minLength: 6 },
 };
 
-const topupSchema = {
-  amount: { required: true, type: 'number', min: 1 },
+const changePasswordSchema = {
+  currentPassword: { required: true, type: 'string' },
+  newPassword: { required: true, type: 'string', minLength: 6 },
+  confirmPassword: { required: true, type: 'string', minLength: 6 },
 };
 
-const topupVerifySchema = {
+const walletOtpSchema = {
+  purpose: { required: true, type: 'string', enum: ['topup', 'withdraw'] },
+};
+
+const topupSchema = {
   amount: { required: true, type: 'number', min: 1 },
   code: { required: true, type: 'string' },
 };
@@ -51,15 +60,24 @@ const withdrawSchema = {
   accountNumber: { type: 'string' },
   iban: { type: 'string' },
   accountTitle: { type: 'string' },
+  code: { required: true, type: 'string' },
 };
 
-const withdrawVerifySchema = {
-  amount: { required: true, type: 'number', min: 1 },
-  gateway: { required: true, type: 'string', enum: WITHDRAW_GATEWAYS },
-  accountNumber: { type: 'string' },
-  iban: { type: 'string' },
-  accountTitle: { type: 'string' },
-  code: { required: true, type: 'string' },
+const validateEmailOrPhone = (data, { requireExactlyOne = false } = {}) => {
+  const errors = [];
+  const hasEmail = Boolean(data.email && String(data.email).trim());
+  const hasPhone = Boolean(data.phone && String(data.phone).trim());
+
+  if (!hasEmail && !hasPhone) {
+    errors.push('Either phone or email is required');
+    return errors;
+  }
+
+  if (requireExactlyOne && hasEmail && hasPhone) {
+    errors.push('Provide either phone or email, not both');
+  }
+
+  return errors;
 };
 
 const validateWithdrawDetails = (data) => {
@@ -78,12 +96,6 @@ const validateWithdrawDetails = (data) => {
   });
 
   return errors;
-};
-
-const validateWithdrawVerify = (data) => {
-  const errors = validateWithdrawDetails(data);
-  const codeErrors = validate({ code: { required: true, type: 'string' } }, data);
-  return [...errors, ...codeErrors];
 };
 
 const validate = (schema, data) => {
@@ -127,16 +139,17 @@ const passwordsMatch = (password, confirmPassword) => password === confirmPasswo
 
 module.exports = {
   signupSchema,
-  verifySignupSchema,
+  verifySignupOtpSchema,
+  resendSignupOtpSchema,
   loginSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  changePasswordSchema,
+  walletOtpSchema,
   topupSchema,
-  topupVerifySchema,
   withdrawSchema,
-  withdrawVerifySchema,
   validateWithdrawDetails,
-  validateWithdrawVerify,
+  validateEmailOrPhone,
   validate,
   passwordsMatch,
 };

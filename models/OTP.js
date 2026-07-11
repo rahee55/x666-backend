@@ -3,11 +3,11 @@ const bcrypt = require('bcryptjs');
 
 const otpSchema = new mongoose.Schema(
   {
-    identifier: { type: String, required: true, trim: true, lowercase: true },
+    identifier: { type: String, required: true, trim: true },
     code: { type: String, required: true, select: false },
     purpose: {
       type: String,
-      enum: ['signup', 'topup', 'withdraw', 'login', 'reset_password'],
+      enum: ['signup', 'reset_password', 'topup', 'withdraw'],
       required: true,
     },
     expiresAt: { type: Date, required: true },
