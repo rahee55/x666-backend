@@ -4,6 +4,9 @@ const cors = require('cors');
 const connectDB = require('./config/mongoose');
 const sessionMiddleware = require('./middleware/session');
 
+// 1. ADD THIS LINE: Import your new socket logic
+const { initSocket } = require('./games/aviator/aviator.socket');
+
 const app = express();
 
 connectDB();
@@ -26,8 +29,10 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+initSocket(server);
 
 module.exports = app;
