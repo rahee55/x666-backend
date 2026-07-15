@@ -7,17 +7,6 @@ const signupSchema = {
   referralCode: { type: 'string' },
 };
 
-const verifySignupOtpSchema = {
-  phone: { type: 'string' },
-  email: { type: 'string' },
-  code: { required: true, type: 'string' },
-};
-
-const resendSignupOtpSchema = {
-  phone: { type: 'string' },
-  email: { type: 'string' },
-};
-
 const loginSchema = {
   phone: { type: 'string' },
   email: { type: 'string' },
@@ -139,8 +128,6 @@ const passwordsMatch = (password, confirmPassword) => password === confirmPasswo
 
 module.exports = {
   signupSchema,
-  verifySignupOtpSchema,
-  resendSignupOtpSchema,
   loginSchema,
   forgotPasswordSchema,
   resetPasswordSchema,

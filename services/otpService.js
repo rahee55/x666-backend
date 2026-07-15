@@ -8,10 +8,9 @@ const OTP_RATE_LIMIT = 5;
 const OTP_RATE_WINDOW_MS = 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
 
-const VALID_PURPOSES = ['signup', 'reset_password', 'topup', 'withdraw'];
+const VALID_PURPOSES = ['reset_password', 'topup', 'withdraw'];
 
 const PURPOSE_LABELS = {
-  signup: 'signup',
   reset_password: 'password reset',
   topup: 'top-up',
   withdraw: 'withdrawal',

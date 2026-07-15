@@ -1,7 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/Users');
 const Wallet = require('../models/Wallet');
-const PendingSignup = require('../models/PendingSignup');
 const {
   sendOTP,
   verifyOTP,
@@ -12,8 +11,6 @@ const { trackReferral } = require('../services/referralService');
 const { asyncHandler, sendSuccess, sendError } = require('../services/helper');
 const {
   signupSchema,
-  verifySignupOtpSchema,
-  resendSignupOtpSchema,
   loginSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
@@ -82,22 +79,6 @@ const formatUser = (user) => ({
   kycStatus: user.kycStatus,
 });
 
-const savePendingSignup = async ({ identifier, channel, name, password, referralCode, referrer }) => {
-  await PendingSignup.findOneAndUpdate(
-    { identifier },
-    {
-      identifier,
-      channel,
-      name: name.trim(),
-      password,
-      referralCode: referralCode?.trim().toUpperCase() || null,
-      referredBy: referrer?._id || null,
-      expiresAt: PendingSignup.buildExpiry(),
-    },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
-};
-
 exports.signup = asyncHandler(async (req, res) => {
   const errors = validate(signupSchema, req.body);
   if (errors.length) return sendError(res, errors.join(', '));
@@ -128,122 +109,33 @@ exports.signup = asyncHandler(async (req, res) => {
     return sendError(res, error.message);
   }
 
-  await savePendingSignup({
-    identifier,
-    channel,
-    name,
-    password,
-    referralCode,
-    referrer,
-  });
-
-  try {
-    const result = await sendOTP(identifier, 'signup');
-    sendSuccess(res, {
-      message: `Signup details saved. OTP sent to your ${channel === 'email' ? 'email' : 'phone number'}.`,
-      data: {
-        channel: result.channel,
-        identifier: result.identifier,
-        expiresAt: result.expiresAt,
-      },
-    });
-  } catch (error) {
-    return handleOtpError(res, error);
-  }
-});
-
-exports.resendSignupOtp = asyncHandler(async (req, res) => {
-  const errors = validate(resendSignupOtpSchema, req.body);
-  if (errors.length) return sendError(res, errors.join(', '));
-
-  const resolved = resolveSignupIdentifier(req.body);
-  if (resolved.error) return sendError(res, resolved.error);
-
-  const { identifier, channel } = resolved;
-
-  const pending = await PendingSignup.findOne({ identifier }).select('+password');
-  if (!pending) {
-    return sendError(res, 'No pending signup found. Please submit signup details first.', 404);
-  }
-
-  try {
-    const result = await sendOTP(identifier, 'signup');
-    sendSuccess(res, {
-      message: `OTP resent to your ${channel === 'email' ? 'email' : 'phone number'}.`,
-      data: {
-        channel: result.channel,
-        identifier: result.identifier,
-        expiresAt: result.expiresAt,
-      },
-    });
-  } catch (error) {
-    return handleOtpError(res, error);
-  }
-});
-
-exports.verifySignupOtp = asyncHandler(async (req, res) => {
-  const errors = validate(verifySignupOtpSchema, req.body);
-  if (errors.length) return sendError(res, errors.join(', '));
-
-  const { phone, email, code } = req.body;
-
-  const resolved = resolveSignupIdentifier({ phone, email });
-  if (resolved.error) return sendError(res, resolved.error);
-
-  const { identifier, channel } = resolved;
-
-  try {
-    await verifyOTP(identifier, code, 'signup');
-  } catch (error) {
-    return sendError(res, error.message, error.message.includes('attempts exceeded') ? 429 : 400);
-  }
-
-  const pending = await PendingSignup.findOne({ identifier }).select('+password');
-  if (!pending) {
-    return sendError(res, 'Signup session expired. Please submit signup details again.', 404);
-  }
-
-  if (channel === 'email') {
-    const emailTaken = await User.findOne({ email: identifier });
-    if (emailTaken) return sendError(res, 'Email already registered', 409);
-  } else {
-    const phoneTaken = await User.findOne({ phone: identifier });
-    if (phoneTaken) return sendError(res, 'Phone already registered', 409);
-  }
-
   const userPayload = {
-    name: pending.name,
-    password: pending.password,
-    referredBy: pending.referredBy,
+    name: name.trim(),
+    password,
+    referredBy: referrer?._id || null,
   };
 
   if (channel === 'email') {
     userPayload.email = identifier;
-    userPayload.isEmailVerified = true;
   } else {
     userPayload.phone = identifier;
-    userPayload.isPhoneVerified = true;
   }
 
   const user = await User.create(userPayload);
 
   await Wallet.create({ userId: user._id, balance: 0, lockedBalance: 0 });
 
-  if (pending.referredBy) {
-    await trackReferral(pending.referredBy, user._id);
+  if (referrer) {
+    await trackReferral(referrer._id, user._id);
   }
 
-  await PendingSignup.deleteOne({ identifier });
+  const token = signToken(user._id);
 
   sendSuccess(
     res,
     {
-      message: 'OTP verified and account created successfully. Please login to continue.',
-      data: {
-        channel,
-        identifier,
-        user: formatUser(user),
-      },
+      message: 'Account created successfully',
+      data: { token, user: formatUser(user) },
     },
     201
   );
