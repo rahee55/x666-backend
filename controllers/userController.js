@@ -1,9 +1,12 @@
 const User = require('../models/Users');
+const { formatPublicUser } = require('../services/userService');
 const { asyncHandler, sendSuccess } = require('../services/helper');
 
 exports.getProfile = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id).populate('referredBy', 'name referralCode');
-  sendSuccess(res, { data: { user } });
+  sendSuccess(res, {
+    data: { user: await formatPublicUser(user, { includeReferredBy: true }) },
+  });
 });
 
 exports.updateProfile = asyncHandler(async (req, res) => {

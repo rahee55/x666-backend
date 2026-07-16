@@ -8,6 +8,7 @@ const {
   OtpRateLimitError,
 } = require('../services/otpService');
 const { trackReferral } = require('../services/referralService');
+const { formatPublicUser } = require('../services/userService');
 const { asyncHandler, sendSuccess, sendError } = require('../services/helper');
 const {
   signupSchema,
@@ -67,17 +68,7 @@ const resolveAuthIdentifier = ({ phone, email }) => {
   return { channel: 'sms', identifier: normalizePhone(phone.trim()) };
 };
 
-const formatUser = (user) => ({
-  id: user._id,
-  name: user.name,
-  phone: user.phone,
-  email: user.email,
-  isPhoneVerified: user.isPhoneVerified,
-  isEmailVerified: user.isEmailVerified,
-  referralCode: user.referralCode,
-  totalReferrals: user.totalReferrals,
-  kycStatus: user.kycStatus,
-});
+const formatUser = formatPublicUser;
 
 exports.signup = asyncHandler(async (req, res) => {
   const errors = validate(signupSchema, req.body);
@@ -135,7 +126,7 @@ exports.signup = asyncHandler(async (req, res) => {
     res,
     {
       message: 'Account created successfully',
-      data: { token, user: formatUser(user) },
+      data: { token, user: await formatUser(user) },
     },
     201
   );
@@ -164,7 +155,7 @@ exports.login = asyncHandler(async (req, res) => {
 
   sendSuccess(res, {
     message: 'Login successful',
-    data: { token, user: formatUser(user) },
+    data: { token, user: await formatUser(user) },
   });
 });
 
@@ -246,7 +237,7 @@ exports.resetPassword = asyncHandler(async (req, res) => {
 
   sendSuccess(res, {
     message: 'Password reset successful',
-    data: { token, user: formatUser(user) },
+    data: { token, user: await formatUser(user) },
   });
 });
 
