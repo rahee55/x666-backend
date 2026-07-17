@@ -5,8 +5,8 @@ const { generateReferralCode } = require('../services/helper');
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
-    phone: { type: String, trim: true, default: null },
-    email: { type: String, trim: true, lowercase: true, default: null },
+    phone: { type: String, trim: true },
+    email: { type: String, trim: true, lowercase: true },
     password: { type: String, required: true, select: false },
     isPhoneVerified: { type: Boolean, default: false },
     isEmailVerified: { type: Boolean, default: false },
@@ -26,9 +26,30 @@ const userSchema = new mongoose.Schema(
   { timestamps: { createdAt: true, updatedAt: false } }
 );
 
-userSchema.index({ phone: 1 }, { unique: true, sparse: true });
-userSchema.index({ email: 1 }, { unique: true, sparse: true });
+userSchema.index(
+  { phone: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { phone: { $type: 'string', $gt: '' } },
+  }
+);
+userSchema.index(
+  { email: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { email: { $type: 'string', $gt: '' } },
+  }
+);
 userSchema.index({ referralCode: 1 }, { unique: true });
+
+userSchema.pre('validate', function omitEmptyContactFields() {
+  if (!this.phone) {
+    this.phone = undefined;
+  }
+  if (!this.email) {
+    this.email = undefined;
+  }
+});
 
 userSchema.pre('validate', function assignReferralCode() {
   if (!this.referralCode) {
