@@ -35,10 +35,7 @@ class AviatorService {
         return parseFloat((Math.random() * (max - min) + min).toFixed(2));
     }
 
-    /**
-     * Compulsory House Edge Check: Force a crash if the total payout liability 
-     * reaches or exceeds 60% of the total bets placed in the round.
-     */
+
     shouldForceCrash(totalBetAmount, totalCashedOutAmount) {
         if (totalBetAmount === 0) return false;
         
