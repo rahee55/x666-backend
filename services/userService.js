@@ -13,6 +13,7 @@ const formatPublicUser = async (user, { includeReferredBy = false } = {}) => {
     referralCode: user.referralCode,
     totalReferrals: user.totalReferrals,
     kycStatus: user.kycStatus,
+    status: user.status,
     spin: spun,
   };
 
@@ -30,4 +31,27 @@ const formatPublicUser = async (user, { includeReferredBy = false } = {}) => {
   return formatted;
 };
 
-module.exports = { formatPublicUser };
+const formatAdminUser = (user, { wallet = null } = {}) => ({
+  id: user._id,
+  name: user.name,
+  phone: user.phone ?? null,
+  email: user.email ?? null,
+  role: user.role,
+  status: user.status,
+  isPhoneVerified: user.isPhoneVerified,
+  isEmailVerified: user.isEmailVerified,
+  referralCode: user.referralCode,
+  totalReferrals: user.totalReferrals,
+  kycStatus: user.kycStatus,
+  deletedAt: user.deletedAt ?? null,
+  createdAt: user.createdAt,
+  updatedAt: user.updatedAt,
+  wallet: wallet
+    ? {
+        balance: wallet.balance,
+        lockedBalance: wallet.lockedBalance,
+      }
+    : null,
+});
+
+module.exports = { formatPublicUser, formatAdminUser };

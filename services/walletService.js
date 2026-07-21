@@ -1,21 +1,26 @@
-const mongoose = require('mongoose');
-const Wallet = require('../models/Wallet');
-const Transaction = require('../models/Transaction');
-const { fetchPaymentStatus } = require('./paymentService');
+const mongoose = require("mongoose");
+const Wallet = require("../models/Wallet");
+const Transaction = require("../models/Transaction");
+const TopupRequest = require("../models/TopupRequest");
+const { getWithdrawHoldHours } = require("./settingsService");
 
 const recordTransaction = async (
   userId,
   type,
   amount,
   {
-    status = 'pending',
+    status = "pending",
     gatewayRef = null,
     accountUsed = null,
-    safepayTracker = null,
-    safepayReference = null,
     destinationAccount = null,
+    topupRequestId = null,
+    paymentReference = null,
+    withdrawableAt = null,
+    receiptNumber = null,
+    receiptPath = null,
+    adminNotes = null,
     session = null,
-  } = {}
+  } = {},
 ) => {
   const payload = {
     userId,
@@ -24,9 +29,13 @@ const recordTransaction = async (
     status,
     gatewayRef,
     accountUsed,
-    safepayTracker,
-    safepayReference,
     destinationAccount,
+    topupRequestId,
+    paymentReference,
+    withdrawableAt,
+    receiptNumber,
+    receiptPath,
+    adminNotes,
   };
 
   if (session) {
@@ -41,14 +50,24 @@ const creditWallet = async (
   userId,
   amount,
   type,
-  { gatewayRef = null, accountUsed = null, status = 'success', session: externalSession = null } = {}
+  {
+    gatewayRef = null,
+    accountUsed = null,
+    status = "success",
+    topupRequestId = null,
+    paymentReference = null,
+    withdrawableAt = null,
+    receiptNumber = null,
+    receiptPath = null,
+    session: externalSession = null,
+  } = {},
 ) => {
   if (amount <= 0) {
-    throw new Error('Credit amount must be greater than zero');
+    throw new Error("Credit amount must be greater than zero");
   }
 
   const ownsSession = !externalSession;
-  const session = externalSession || await mongoose.startSession();
+  const session = externalSession || (await mongoose.startSession());
 
   if (ownsSession) {
     session.startTransaction();
@@ -58,13 +77,18 @@ const creditWallet = async (
     const wallet = await Wallet.findOneAndUpdate(
       { userId },
       { $inc: { balance: amount } },
-      { new: true, upsert: true, session }
+      { new: true, upsert: true, session },
     );
 
-    await recordTransaction(userId, type, amount, {
+    const transaction = await recordTransaction(userId, type, amount, {
       status,
       gatewayRef,
       accountUsed,
+      topupRequestId,
+      paymentReference,
+      withdrawableAt,
+      receiptNumber,
+      receiptPath,
       session,
     });
 
@@ -72,7 +96,7 @@ const creditWallet = async (
       await session.commitTransaction();
     }
 
-    return wallet;
+    return { wallet, transaction };
   } catch (error) {
     if (ownsSession) {
       await session.abortTransaction();
@@ -89,14 +113,20 @@ const debitWallet = async (
   userId,
   amount,
   type,
-  { gatewayRef = null, accountUsed = null, status = 'success', session: externalSession = null } = {}
+  {
+    gatewayRef = null,
+    accountUsed = null,
+    status = "success",
+    destinationAccount = null,
+    session: externalSession = null,
+  } = {},
 ) => {
   if (amount <= 0) {
-    throw new Error('Debit amount must be greater than zero');
+    throw new Error("Debit amount must be greater than zero");
   }
 
   const ownsSession = !externalSession;
-  const session = externalSession || await mongoose.startSession();
+  const session = externalSession || (await mongoose.startSession());
 
   if (ownsSession) {
     session.startTransaction();
@@ -106,16 +136,17 @@ const debitWallet = async (
     const wallet = await Wallet.findOne({ userId }).session(session);
 
     if (!wallet || wallet.balance < amount) {
-      throw new Error('Insufficient balance');
+      throw new Error("Insufficient balance");
     }
 
     wallet.balance -= amount;
     await wallet.save({ session });
 
-    await recordTransaction(userId, type, amount, {
+    const transaction = await recordTransaction(userId, type, amount, {
       status,
       gatewayRef,
       accountUsed,
+      destinationAccount,
       session,
     });
 
@@ -123,7 +154,7 @@ const debitWallet = async (
       await session.commitTransaction();
     }
 
-    return wallet;
+    return { wallet, transaction };
   } catch (error) {
     if (ownsSession) {
       await session.abortTransaction();
@@ -136,40 +167,78 @@ const debitWallet = async (
   }
 };
 
-const completePendingTopup = async (
-  transactionId,
-  { safepayTracker, safepayReference, gatewayRef } = {}
-) => {
+const getHeldTopupAmount = async (userId) => {
+  const now = new Date();
+  const result = await Transaction.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(String(userId)),
+        type: "topup",
+        status: "success",
+        withdrawableAt: { $gt: now },
+      },
+    },
+    { $group: { _id: null, total: { $sum: "$amount" } } },
+  ]);
+
+  return result[0]?.total || 0;
+};
+
+const getWithdrawableBalance = async (userId) => {
+  const wallet = await Wallet.findOne({ userId });
+  const held = await getHeldTopupAmount(userId);
+  return Math.max(0, (wallet?.balance || 0) - held);
+};
+
+const approveTopupRequest = async (topupRequest, { reviewedBy = null } = {}) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const transaction = await Transaction.findOne({
-      _id: transactionId,
-      type: 'topup',
-      status: 'pending',
+    const lockedRequest = await TopupRequest.findOne({
+      _id: topupRequest._id,
+      status: "under_review",
     }).session(session);
 
-    if (!transaction) {
-      await session.abortTransaction();
-      return null;
+    if (!lockedRequest) {
+      throw new Error("Top-up request is not awaiting review");
     }
 
-    const wallet = await Wallet.findOneAndUpdate(
-      { userId: transaction.userId },
-      { $inc: { balance: transaction.amount } },
-      { new: true, upsert: true, session }
+    const withdrawHoldHours = await getWithdrawHoldHours();
+    const withdrawableAt = new Date(
+      Date.now() + withdrawHoldHours * 60 * 60 * 1000,
     );
 
-    transaction.status = 'success';
-    transaction.safepayTracker = safepayTracker || transaction.safepayTracker;
-    transaction.safepayReference = safepayReference || transaction.safepayReference;
-    transaction.gatewayRef = gatewayRef || transaction.gatewayRef;
-    transaction.accountUsed = 'safepay';
-    await transaction.save({ session });
+    const wallet = await Wallet.findOneAndUpdate(
+      { userId: lockedRequest.userId },
+      { $inc: { balance: lockedRequest.expectedAmount } },
+      { new: true, upsert: true, session },
+    );
+
+    const [transaction] = await Transaction.create(
+      [
+        {
+          userId: lockedRequest.userId,
+          type: "topup",
+          amount: lockedRequest.expectedAmount,
+          status: "success",
+          accountUsed: "manual",
+          topupRequestId: lockedRequest._id,
+          paymentReference: lockedRequest.referenceCode,
+          withdrawableAt,
+        },
+      ],
+      { session },
+    );
+
+    lockedRequest.status = "approved";
+    lockedRequest.transactionId = transaction._id;
+    lockedRequest.reviewedBy = reviewedBy;
+    lockedRequest.reviewedAt = new Date();
+    await lockedRequest.save({ session });
 
     await session.commitTransaction();
-    return { wallet, transaction };
+    return { wallet, transaction, topupRequest: lockedRequest };
   } catch (error) {
     await session.abortTransaction();
     throw error;
@@ -181,8 +250,21 @@ const completePendingTopup = async (
 const queueWithdrawForManualReview = async (
   userId,
   amount,
-  { destinationAccount, accountUsed = 'other', gatewayRef = null, safepayReference = null } = {}
+  {
+    destinationAccount,
+    accountUsed = "other",
+    gatewayRef = null,
+  } = {},
 ) => {
+  const withdrawable = await getWithdrawableBalance(userId);
+  if (withdrawable < amount) {
+    const error = new Error(
+      "Insufficient withdrawable balance. Recent top-ups may still be on hold.",
+    );
+    error.status = 402;
+    throw error;
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -190,19 +272,18 @@ const queueWithdrawForManualReview = async (
     const wallet = await Wallet.findOne({ userId }).session(session);
 
     if (!wallet || wallet.balance < amount) {
-      throw new Error('Insufficient balance');
+      throw new Error("Insufficient balance");
     }
 
     wallet.balance -= amount;
     wallet.lockedBalance += amount;
     await wallet.save({ session });
 
-    const transaction = await recordTransaction(userId, 'withdraw', amount, {
-      status: 'pending_manual_review',
+    const transaction = await recordTransaction(userId, "withdraw", amount, {
+      status: "pending_manual_review",
       gatewayRef,
       accountUsed,
       destinationAccount,
-      safepayReference,
       session,
     });
 
@@ -216,100 +297,15 @@ const queueWithdrawForManualReview = async (
   }
 };
 
-const getBalance = (userId) => Wallet.findOne({ userId });
-
-const getTransactions = (userId, { limit = 50, skip = 0 } = {}) =>
-  Transaction.find({ userId }).sort('-createdAt').skip(skip).limit(limit);
-
-const countTransactions = (userId) => Transaction.countDocuments({ userId });
-
-const findPendingTopupByOrderId = (orderId) =>
-  Transaction.findOne({ gatewayRef: orderId, type: 'topup', status: 'pending' });
-
-const processInstantWithdraw = async (
-  userId,
-  amount,
-  { destinationAccount, accountUsed = 'safepay', gatewayRef = null, safepayReference = null } = {}
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const wallet = await Wallet.findOne({ userId }).session(session);
-
-    if (!wallet || wallet.balance < amount) {
-      throw new Error('Insufficient balance');
-    }
-
-    wallet.balance -= amount;
-    await wallet.save({ session });
-
-    const transaction = await recordTransaction(userId, 'withdraw', amount, {
-      status: 'success',
-      gatewayRef,
-      accountUsed,
-      destinationAccount,
-      safepayReference,
-      session,
-    });
-
-    await session.commitTransaction();
-    return { wallet, transaction };
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
-  }
-};
-
-const queueRaastWithdraw = async (
-  userId,
-  amount,
-  { destinationAccount, gatewayRef, safepayReference, accountUsed = 'safepay' } = {}
-) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const wallet = await Wallet.findOne({ userId }).session(session);
-
-    if (!wallet || wallet.balance < amount) {
-      throw new Error('Insufficient balance');
-    }
-
-    wallet.balance -= amount;
-    wallet.lockedBalance += amount;
-    await wallet.save({ session });
-
-    const transaction = await recordTransaction(userId, 'withdraw', amount, {
-      status: 'pending',
-      gatewayRef,
-      accountUsed,
-      destinationAccount,
-      safepayReference: safepayReference || gatewayRef,
-      session,
-    });
-
-    await session.commitTransaction();
-    return { wallet, transaction };
-  } catch (error) {
-    await session.abortTransaction();
-    throw error;
-  } finally {
-    session.endSession();
-  }
-};
-
-const completePendingWithdraw = async (transactionId, { safepayReference, gatewayRef } = {}) => {
+const completePendingWithdraw = async (transactionId, { adminNotes = null } = {}) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const transaction = await Transaction.findOne({
       _id: transactionId,
-      type: 'withdraw',
-      status: { $in: ['pending', 'pending_manual_review'] },
+      type: "withdraw",
+      status: "pending_manual_review",
     }).session(session);
 
     if (!transaction) {
@@ -317,7 +313,9 @@ const completePendingWithdraw = async (transactionId, { safepayReference, gatewa
       return null;
     }
 
-    const wallet = await Wallet.findOne({ userId: transaction.userId }).session(session);
+    const wallet = await Wallet.findOne({ userId: transaction.userId }).session(
+      session,
+    );
     if (!wallet) {
       await session.abortTransaction();
       return null;
@@ -329,10 +327,8 @@ const completePendingWithdraw = async (transactionId, { safepayReference, gatewa
 
     await wallet.save({ session });
 
-    transaction.status = 'success';
-    transaction.safepayReference = safepayReference || transaction.safepayReference;
-    transaction.gatewayRef = gatewayRef || transaction.gatewayRef;
-    transaction.accountUsed = 'safepay';
+    transaction.status = "success";
+    if (adminNotes) transaction.adminNotes = adminNotes;
     await transaction.save({ session });
 
     await session.commitTransaction();
@@ -345,62 +341,88 @@ const completePendingWithdraw = async (transactionId, { safepayReference, gatewa
   }
 };
 
-const findWithdrawByGatewayRef = (gatewayRef) =>
-  Transaction.findOne({ gatewayRef, type: 'withdraw' });
+const rejectPendingWithdraw = async (transactionId, { adminNotes = null } = {}) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-const findTopupByOrderId = (orderId) =>
-  Transaction.findOne({ gatewayRef: orderId, type: 'topup' });
+  try {
+    const transaction = await Transaction.findOne({
+      _id: transactionId,
+      type: "withdraw",
+      status: "pending_manual_review",
+    }).session(session);
 
-const findTopupByIdForUser = (transactionId, userId) =>
-  Transaction.findOne({ _id: transactionId, userId, type: 'topup' });
+    if (!transaction) {
+      await session.abortTransaction();
+      return null;
+    }
 
-const reconcilePendingTopup = async (transaction) => {
-  if (!transaction || transaction.status !== 'pending' || !transaction.safepayTracker) {
-    return transaction;
+    const wallet = await Wallet.findOne({ userId: transaction.userId }).session(
+      session,
+    );
+    if (!wallet) {
+      await session.abortTransaction();
+      return null;
+    }
+
+    wallet.balance += transaction.amount;
+    if (wallet.lockedBalance >= transaction.amount) {
+      wallet.lockedBalance -= transaction.amount;
+    }
+    await wallet.save({ session });
+
+    transaction.status = "rejected";
+    transaction.adminNotes = adminNotes;
+    await transaction.save({ session });
+
+    await session.commitTransaction();
+    return { wallet, transaction };
+  } catch (error) {
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    session.endSession();
   }
-
-  const paymentStatus = await fetchPaymentStatus(transaction.safepayTracker);
-  if (!paymentStatus.isPaid) {
-    return transaction;
-  }
-
-  const result = await completePendingTopup(transaction._id, {
-    safepayTracker: transaction.safepayTracker,
-    safepayReference: paymentStatus.referenceCode,
-    gatewayRef: transaction.gatewayRef,
-  });
-
-  return result?.transaction || transaction;
 };
 
-const reconcilePendingTopupsForUser = async (userId) => {
-  const pending = await Transaction.find({
-    userId,
-    type: 'topup',
-    status: 'pending',
-    safepayTracker: { $ne: null },
-  })
-    .sort('-createdAt')
-    .limit(5);
+const getBalance = async (userId) => {
+  const wallet = await Wallet.findOne({ userId });
+  const withdrawableBalance = await getWithdrawableBalance(userId);
+  const heldTopupAmount = await getHeldTopupAmount(userId);
 
-  await Promise.all(pending.map((tx) => reconcilePendingTopup(tx)));
+  if (!wallet) {
+    return {
+      balance: 0,
+      lockedBalance: 0,
+      withdrawableBalance: 0,
+      heldTopupAmount: 0,
+    };
+  }
+
+  return {
+    balance: wallet.balance,
+    lockedBalance: wallet.lockedBalance,
+    withdrawableBalance,
+    heldTopupAmount,
+  };
 };
+
+const getTransactions = (userId, { limit = 50, skip = 0 } = {}) =>
+  Transaction.find({ userId }).sort("-createdAt").skip(skip).limit(limit);
+
+const countTransactions = (userId) => Transaction.countDocuments({ userId });
 
 module.exports = {
   creditWallet,
   debitWallet,
   recordTransaction,
-  completePendingTopup,
+  approveTopupRequest,
   queueWithdrawForManualReview,
-  processInstantWithdraw,
-  queueRaastWithdraw,
   completePendingWithdraw,
-  findWithdrawByGatewayRef,
-  findTopupByIdForUser,
+  rejectPendingWithdraw,
   getBalance,
   getTransactions,
   countTransactions,
-  findPendingTopupByOrderId,
-  findTopupByOrderId,
-  reconcilePendingTopupsForUser,
+  getWithdrawableBalance,
+  getHeldTopupAmount,
 };

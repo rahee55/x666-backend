@@ -19,9 +19,19 @@ const spinLimiter = rateLimit({
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
-  message: { message: 'Too many authentication attempts.' },
+  message: { message: "Too many authentication attempts." },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-module.exports = { otpLimiter, spinLimiter, authLimiter };
+const topupInitiateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: {
+    message: "Too many top-up initiation attempts. Please try again later.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+module.exports = { otpLimiter, spinLimiter, authLimiter, topupInitiateLimiter };

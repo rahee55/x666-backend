@@ -22,8 +22,21 @@ const userSchema = new mongoose.Schema(
       enum: ['pending', 'submitted', 'approved', 'rejected'],
       default: 'pending',
     },
+    role: {
+      type: String,
+      enum: ['user', 'admin'],
+      default: 'user',
+      index: true,
+    },
+    status: {
+      type: String,
+      enum: ['active', 'suspended', 'banned'],
+      default: 'active',
+      index: true,
+    },
+    deletedAt: { type: Date, default: null, index: true },
   },
-  { timestamps: { createdAt: true, updatedAt: false } }
+  { timestamps: true }
 );
 
 userSchema.index(

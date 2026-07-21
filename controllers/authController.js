@@ -1,4 +1,3 @@
-const jwt = require('jsonwebtoken');
 const User = require('../models/Users');
 const Wallet = require('../models/Wallet');
 const {
@@ -9,6 +8,7 @@ const {
 } = require('../services/otpService');
 const { trackReferral } = require('../services/referralService');
 const { formatPublicUser } = require('../services/userService');
+const { signToken } = require('../services/authService');
 const { asyncHandler, sendSuccess, sendError } = require('../services/helper');
 const {
   signupSchema,
@@ -20,11 +20,6 @@ const {
   validate,
   passwordsMatch,
 } = require('../services/validationSchema');
-
-const signToken = (userId) =>
-  jwt.sign({ id: userId }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  });
 
 const handleOtpError = (res, error) => {
   if (error instanceof OtpRateLimitError || error.code === 'OTP_RATE_LIMIT') {
@@ -120,7 +115,7 @@ exports.signup = asyncHandler(async (req, res) => {
     await trackReferral(referrer._id, user._id);
   }
 
-  const token = signToken(user._id);
+  const token = signToken(user);
 
   sendSuccess(
     res,
@@ -151,7 +146,15 @@ exports.login = asyncHandler(async (req, res) => {
     return sendError(res, 'Invalid credentials', 401);
   }
 
-  const token = signToken(user._id);
+  if (user.deletedAt) {
+    return sendError(res, 'Invalid credentials', 401);
+  }
+
+  if (user.status !== 'active') {
+    return sendError(res, `Account is ${user.status}`, 403);
+  }
+
+  const token = signToken(user);
 
   sendSuccess(res, {
     message: 'Login successful',
@@ -233,7 +236,7 @@ exports.resetPassword = asyncHandler(async (req, res) => {
   user.password = newPassword;
   await user.save();
 
-  const token = signToken(user._id);
+  const token = signToken(user);
 
   sendSuccess(res, {
     message: 'Password reset successful',
