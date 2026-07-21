@@ -1,12 +1,29 @@
 const crypto = require("crypto");
 const fs = require("fs/promises");
+const path = require("path");
 const { Jimp, intToRGBA } = require("jimp");
 const manualPayment = require("../config/manualPayment");
 
 const HASH_SIZE = 8;
 
+const mimeFromPath = (filePath) => {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  return null;
+};
+
+const readReceiptImage = async (filePath) => {
+  const mime = mimeFromPath(filePath);
+  if (mime) {
+    const buffer = await fs.readFile(filePath);
+    return Jimp.read(buffer, mime);
+  }
+  return Jimp.read(filePath);
+};
+
 const averageHash = async (filePath) => {
-  const image = await Jimp.read(filePath);
+  const image = await readReceiptImage(filePath);
   image.greyscale().resize({ w: HASH_SIZE, h: HASH_SIZE });
 
   let total = 0;

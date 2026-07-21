@@ -156,12 +156,19 @@ const sendEmailOtp = async (email, code, purpose) => {
   }
 };
 
+const resolveOtpCode = () => {
+  if (process.env.NODE_ENV !== "production" && process.env.OTP_DEV_FIXED_CODE) {
+    return String(process.env.OTP_DEV_FIXED_CODE).trim();
+  }
+  return generateCode();
+};
+
 const generateOTP = async (identifier, purpose) => {
   const normalized = normalizeIdentifier(identifier);
   assertValidPurpose(purpose);
   await checkSendRateLimit(normalized);
 
-  const code = generateCode();
+  const code = resolveOtpCode();
   const expiresAt = new Date(Date.now() + OTP_EXPIRY_MS);
 
   await OTP.create({
