@@ -2,13 +2,13 @@
 const express = require('express');
 const router = express.Router();
 const aviatorController = require('./aviator.controller');
+// const { verifyToken } = require('../middlewares/auth'); // Ensure you have this
 
-// Main Game Routine Actions
-router.post('/start-round', aviatorController.startNewRound);
-router.post('/place-bet', aviatorController.placeBet);
-router.post('/cashout', aviatorController.cashout);
+// Polling Endpoint for Frontend Display Updates
+router.get('/state', aviatorController.getActiveState);
 
-// Polling/Sync Endpoint for Frontend Display Updates
-router.get('/state', aviatorController.getGameState);
+// Fetch User Bet History (Protected Route)
+// Add verifyToken middleware here to protect the route
+router.get('/getBetsById', /* verifyToken, */ aviatorController.getBetsById);
 
 module.exports = router;
