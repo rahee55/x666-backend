@@ -1,14 +1,11 @@
-// games/aviator/aviator.routes.js
 const express = require('express');
 const router = express.Router();
 const aviatorController = require('./aviator.controller');
-// const { verifyToken } = require('../middlewares/auth'); // Ensure you have this
+const auth = require('../../middleware/auth'); // Adjust path if needed
 
-// Polling Endpoint for Frontend Display Updates
 router.get('/state', aviatorController.getActiveState);
 
-// Fetch User Bet History (Protected Route)
-// Add verifyToken middleware here to protect the route
-router.get('/getBetsById', /* verifyToken, */ aviatorController.getBetsById);
+// This matches your frontend 401 issue: It requires auth to get the user's ID
+router.get('/getBetsById', auth, aviatorController.getBetsById);
 
 module.exports = router;
