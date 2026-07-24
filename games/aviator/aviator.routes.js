@@ -5,7 +5,7 @@ const auth = require('../../middleware/auth'); // Adjust path if needed
 
 router.get('/state', aviatorController.getActiveState);
 
-// This matches your frontend 401 issue: It requires auth to get the user's ID
-router.get('/getBetsById', auth, aviatorController.getBetsById);
+// FIX: Changed from router.get to router.post to match your Angular frontend
+router.post('/getBetsById', auth, aviatorController.getBetsById);
 
 module.exports = router;
