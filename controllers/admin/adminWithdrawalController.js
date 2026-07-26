@@ -1,31 +1,9 @@
-const Transaction = require('../../models/Transaction');
 const {
   completePendingWithdraw,
   rejectPendingWithdraw,
 } = require('../../services/walletService');
-const { getPaginatedData } = require('../../services/table.service');
 const { adminReviewSchema, validate } = require('../../services/validationSchema');
 const { asyncHandler, sendSuccess, sendError, normalizeObjectId } = require('../../services/helper');
-
-exports.listPendingWithdrawals = asyncHandler(async (req, res) => {
-  const queryParams = {
-    ...req.query,
-    type: 'withdraw',
-    status: 'pending_manual_review',
-  };
-
-  const result = await getPaginatedData(Transaction, queryParams, ['gatewayRef', 'destinationAccount'], {
-    populate: { path: 'userId', select: 'name email phone' },
-    filters: {},
-  });
-
-  sendSuccess(res, {
-    data: {
-      withdrawals: result.rows,
-      pagination: result.pagination,
-    },
-  });
-});
 
 exports.approveWithdraw = asyncHandler(async (req, res) => {
   const id = normalizeObjectId(req.params.id);

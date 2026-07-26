@@ -3,7 +3,7 @@ const adminUserController = require('../../controllers/admin/adminUserController
 
 const router = express.Router();
 
-router.get('/', adminUserController.listUsers);
+router.post('/list', adminUserController.listUsers);
 router.post('/', adminUserController.createUser);
 router.get('/:id', adminUserController.getUser);
 router.put('/:id', adminUserController.updateUser);

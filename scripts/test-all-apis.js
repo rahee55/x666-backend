@@ -364,17 +364,42 @@ async function main() {
   await expectOk("GET /admin/auth/me", "GET", "/admin/auth/me", { token: adminToken });
   await expectOk("GET /admin/dashboard/stats", "GET", "/admin/dashboard/stats", { token: adminToken });
 
+  await expectOk("POST /admin/review/list (unified)", "POST", "/admin/review/list", {
+    token: adminToken,
+    body: {
+      draw: 1,
+      start: 0,
+      length: 10,
+      columns: [
+        { data: "createdAt" },
+        { data: "reviewType" },
+        { data: "amount" },
+      ],
+      order: [{ column: 0, dir: "desc" }],
+      search: { value: "" },
+      filters: { type: "all" },
+    },
+  });
+
   if (withdrawTransactionId) {
     await expectOk("GET /wallet/withdraw/status/:id", "GET", `/wallet/withdraw/status/${withdrawTransactionId}`, {
       token: userToken,
     });
 
-    await expectOk("GET /admin/withdrawals/pending", "GET", "/admin/withdrawals/pending", {
+    await expectOk("POST /admin/review/list (withdraw filter)", "POST", "/admin/review/list", {
       token: adminToken,
-      query: { page: 1, limit: 10 },
+      body: {
+        draw: 1,
+        start: 0,
+        length: 10,
+        columns: [{ data: "createdAt" }, { data: "amount" }],
+        order: [{ column: 0, dir: "asc" }],
+        search: { value: "" },
+        filters: { type: "withdraw" },
+      },
     });
 
-    await expectOk("POST /admin/withdrawals/:id/approve", "POST", `/admin/withdrawals/${withdrawTransactionId}/approve`, {
+    await expectOk("POST /admin/review/withdraw/:id/approve", "POST", `/admin/review/withdraw/${withdrawTransactionId}/approve`, {
       token: adminToken,
       body: { notes: "Paid via JazzCash — API test" },
     });
@@ -390,32 +415,40 @@ async function main() {
   }
 
   if (withdrawRejectId) {
-    await expectOk("POST /admin/withdrawals/:id/reject", "POST", `/admin/withdrawals/${withdrawRejectId}/reject`, {
+    await expectOk("POST /admin/review/withdraw/:id/reject (unified)", "POST", `/admin/review/withdraw/${withdrawRejectId}/reject`, {
       token: adminToken,
       body: { notes: "API test rejection" },
     });
   }
 
-  await expectOk("GET /admin/transactions", "GET", "/admin/transactions", {
+  await expectOk("POST /admin/review/list (topup filter)", "POST", "/admin/review/list", {
     token: adminToken,
-    query: { page: 1, limit: 10, status: "under_review" },
+    body: {
+      draw: 1,
+      start: 0,
+      length: 10,
+      columns: [{ data: "createdAt" }, { data: "referenceCode" }, { data: "status" }],
+      order: [{ column: 0, dir: "desc" }],
+      search: { value: "" },
+      filters: { type: "topup" },
+    },
   });
 
   if (topupRequestId) {
-    await expectOk("GET /admin/transactions/:id", "GET", `/admin/transactions/${topupRequestId}`, {
+    await expectOk("GET /admin/review/topup/:id", "GET", `/admin/review/topup/${topupRequestId}`, {
       token: adminToken,
     });
 
-    const shotRes = await request("GET", `/admin/transactions/${topupRequestId}/screenshot`, {
+    const shotRes = await request("GET", `/admin/review/topup/${topupRequestId}/screenshot`, {
       token: adminToken,
     });
     record(
-      "GET /admin/transactions/:id/screenshot",
+      "GET /admin/review/topup/:id/screenshot",
       shotRes.status === 200,
       `${shotRes.status} ${shotRes.json?.message || "image served"}`,
     );
 
-    await expectOk("PATCH /admin/transactions/:id/approve", "PATCH", `/admin/transactions/${topupRequestId}/approve`, {
+    await expectOk("POST /admin/review/topup/:id/approve", "POST", `/admin/review/topup/${topupRequestId}/approve`, {
       token: adminToken,
       body: { notes: "API test approval" },
     });
@@ -435,9 +468,23 @@ async function main() {
   }
 
   // ── Admin users CRUD ──
-  await expectOk("GET /admin/users", "GET", "/admin/users", {
+  await expectOk("GET /admin/users (POST list)", "POST", "/admin/users/list", {
     token: adminToken,
-    query: { page: 1, limit: 5 },
+    body: {
+      draw: 1,
+      start: 0,
+      length: 5,
+      columns: [
+        { data: "createdAt" },
+        { data: "name" },
+        { data: "email" },
+        { data: "role" },
+        { data: "status" },
+      ],
+      order: [{ column: 0, dir: "desc" }],
+      search: { value: "" },
+      filters: { role: "user", status: "active" },
+    },
   });
 
   if (userId) {

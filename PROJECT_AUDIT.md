@@ -1,12 +1,12 @@
 # x666-backend — API Route Reference
 
-> Static reference only. Base URL: `http://localhost:3001/api` · Updated: 2026-07-21
+> Static reference only. Base URL: `http://localhost:3001/api` · Updated: 2026-07-26
 
 **Token:** `No` = no auth header · `Yes` = `Authorization: Bearer <jwt>`
 
 **Role:** `Public` · `User` · `Admin`
 
-**Payload notes:** `—` = no body. Query params shown as JSON under `query`. Optional fields may be omitted.
+**Payload notes:** `—` = no body. Query params shown as JSON under `query`. Optional fields may be omitted. Admin table/list routes use **POST** with a DataTables-style JSON body (see shared section below).
 
 ---
 
@@ -294,6 +294,124 @@ Or:
 
 ---
 
+## Admin — DataTables (shared list payload)
+
+All admin **list/table** endpoints use `POST` with `Content-Type: application/json`.  
+Implemented by `makeDataTable()` in `services/table.service.js`.
+
+| Route | Purpose |
+|-------|---------|
+| POST `/admin/users/list` | Paginated users |
+| POST `/admin/review/list` | Pending top-ups + withdrawals (unified review queue) |
+
+### Request body (all list routes)
+
+```json
+{
+  "draw": 1,
+  "start": 0,
+  "length": 10,
+  "columns": [
+    { "data": "createdAt" },
+    { "data": "name" },
+    { "data": "email" },
+    { "data": "role" },
+    { "data": "status" }
+  ],
+  "order": [
+    { "column": 0, "dir": "desc" }
+  ],
+  "search": {
+    "value": "bilal",
+    "regex": false
+  },
+  "filters": {
+    "role": "user",
+    "status": "active",
+    "fromDate": "2026-07-01",
+    "toDate": "2026-07-21"
+  }
+}
+```
+
+### Request fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `draw` | number | no | DataTables draw counter (echoed in response). Default `1`. |
+| `start` | number | no | Row offset for pagination (0-based). Default `0`. |
+| `length` | number | no | Rows per page. Default `10`, max `100`. |
+| `columns` | array | no | Column defs; `data` = MongoDB field used for sort/search. |
+| `order` | array | no | Sort: `column` = index in `columns`, `dir` = `"asc"` \| `"desc"`. |
+| `search` | object | no | Global search; `search.value` searched across configured fields. |
+| `filters` | object | no | Exact-match filters; empty, `null`, `""`, or `"all"` are ignored. |
+
+### Filter rules
+
+- **Dates:** use `filters.fromDate` and/or `filters.toDate` (ISO date strings; end date includes full day).
+- **Booleans:** send `"true"` / `"false"` as strings — they are normalized server-side.
+- **ObjectIds:** keys ending in `Id` or `_id` (e.g. `userId`) are cast to MongoDB ObjectId when valid.
+
+### Response body (all list routes)
+
+```json
+{
+  "success": true,
+  "draw": 1,
+  "recordsTotal": 842,
+  "recordsFiltered": 15,
+  "data": [],
+  "pagination": {
+    "totalItems": 15,
+    "totalPages": 2,
+    "currentPage": 1,
+    "itemsPerPage": 10,
+    "start": 0,
+    "length": 10,
+    "hasNextPage": true,
+    "hasPrevPage": false
+  }
+}
+```
+
+### Response fields
+
+| Field | Description |
+|-------|-------------|
+| `draw` | Same as request `draw`. |
+| `recordsTotal` | Total rows before search/filters (base query only). |
+| `recordsFiltered` | Total rows after search + filters. |
+| `data` | Current page rows (formatted per endpoint). |
+| `pagination` | Helper object for custom UI (page number, next/prev, etc.). |
+
+### Frontend example (DataTables `ajax`)
+
+```javascript
+ajax: {
+  url: '/api/admin/users/list',
+  type: 'POST',
+  headers: { Authorization: `Bearer ${adminToken}` },
+  contentType: 'application/json',
+  data: (d) => JSON.stringify({
+    draw: d.draw,
+    start: d.start,
+    length: d.length,
+    columns: d.columns,
+    order: d.order,
+    search: d.search,
+    filters: {
+      role: selectedRole,       // omit or "all" to skip
+      status: selectedStatus,
+      fromDate: dateFrom,
+      toDate: dateTo,
+    },
+  }),
+  dataSrc: (json) => json.data,
+}
+```
+
+---
+
 ## Admin — Dashboard
 
 | Method | Route | Token | Role | Payload |
@@ -317,6 +435,11 @@ Or:
     "totalGames": null,
     "totalGamesNote": "No Game model in codebase.",
     "pendingReviewCount": 12,
+    "pendingReview": {
+      "topup": 8,
+      "withdraw": 4,
+      "total": 12
+    },
     "todayRevenue": 3500.47,
     "thisMonthRevenue": 42000.12
   }
@@ -329,25 +452,51 @@ Or:
 
 | Method | Route | Token | Role | Payload |
 |--------|-------|-------|------|---------|
-| GET | `/admin/users` | Yes | Admin | query JSON below |
+| POST | `/admin/users/list` | Yes | Admin | DataTables JSON (shared section) |
 | POST | `/admin/users` | Yes | Admin | JSON below |
 | GET | `/admin/users/:id` | Yes | Admin | — |
 | PUT | `/admin/users/:id` | Yes | Admin | JSON below |
 | PATCH | `/admin/users/:id/status` | Yes | Admin | JSON below |
 | DELETE | `/admin/users/:id` | Yes | Admin | — |
 
-**GET `/admin/users` query**
+**POST `/admin/users/list`** — use shared DataTables body. Supported **filters:** `role`, `status`, `fromDate`, `toDate`. **Search fields:** `name`, `email`, `phone`, `referralCode`. **Sort columns:** any User model field in `columns[].data` (e.g. `createdAt`, `name`, `email`, `role`, `status`).
+
+Example **filters** only:
 ```json
 {
-  "page": 1,
-  "limit": 10,
-  "search": "",
-  "sortBy": "createdAt",
-  "sortOrder": "desc",
+  "draw": 1,
+  "start": 0,
+  "length": 10,
+  "columns": [
+    { "data": "createdAt" },
+    { "data": "name" },
+    { "data": "email" },
+    { "data": "role" },
+    { "data": "status" }
+  ],
+  "order": [{ "column": 0, "dir": "desc" }],
+  "search": { "value": "bilal" },
+  "filters": {
+    "role": "user",
+    "status": "active",
+    "fromDate": "2026-07-01",
+    "toDate": "2026-07-21"
+  }
+}
+```
+
+Example **response** `data` row:
+```json
+{
+  "id": "665a1b2c3d4e5f6789012345",
+  "name": "Bilal Ahmad",
+  "phone": null,
+  "email": "user@example.com",
   "role": "user",
   "status": "active",
-  "fromDate": "2026-07-01",
-  "toDate": "2026-07-21"
+  "referralCode": "A1B2C3D4",
+  "kycStatus": "pending",
+  "createdAt": "2026-07-01T10:00:00.000Z"
 }
 ```
 
@@ -363,13 +512,17 @@ Or:
 }
 ```
 
-**PUT `/admin/users/:id`**
+**PUT `/admin/users/:id`** — all fields optional; password is **not** accepted on this route.
 ```json
 {
   "name": "Updated Name",
+  "phone": "03001234567",
   "email": "updated@example.com",
   "role": "user",
-  "kycStatus": "pending"
+  "status": "active",
+  "kycStatus": "approved",
+  "isPhoneVerified": true,
+  "isEmailVerified": true
 }
 ```
 
@@ -382,79 +535,182 @@ Or:
 
 ---
 
-## Admin — Transactions (top-up review)
+## ⭐ Admin — Review (top-up & withdraw)
+
+> **Single admin inbox** for pending top-ups and withdrawals.
 
 | Method | Route | Token | Role | Payload |
 |--------|-------|-------|------|---------|
-| GET | `/admin/transactions` | Yes | Admin | query JSON below |
-| GET | `/admin/transactions/:id` | Yes | Admin | — |
-| GET | `/admin/transactions/:id/screenshot` | Yes | Admin | — (image file) |
-| PATCH | `/admin/transactions/:id/approve` | Yes | Admin | JSON below |
-| PATCH | `/admin/transactions/:id/reject` | Yes | Admin | JSON below |
+| POST | `/admin/review/list` | Yes | Admin | DataTables JSON (shared section) |
+| GET | `/admin/review/topup/:id` | Yes | Admin | — |
+| GET | `/admin/review/topup/:id/screenshot` | Yes | Admin | — (receipt image file) |
+| POST | `/admin/review/topup/:id/approve` | Yes | Admin | JSON below · **credits wallet** |
+| POST | `/admin/review/topup/:id/reject` | Yes | Admin | JSON below · no wallet change |
+| POST | `/admin/review/withdraw/:id/approve` | Yes | Admin | JSON below · **finalizes payout** |
+| POST | `/admin/review/withdraw/:id/reject` | Yes | Admin | JSON below · **refunds wallet** |
 
-**GET `/admin/transactions` query**
+Dashboard: `GET /admin/dashboard/stats` → `pendingReviewCount` (total) and `pendingReview: { topup, withdraw, total }`.
+
+### POST `/admin/review/list`
+
+Same DataTables body as other admin list routes, plus optional **`filters.type`:**
+
+| `filters.type` | Result |
+|----------------|--------|
+| omitted or `"all"` | Pending top-ups (`under_review`) **+** pending withdrawals (`pending_manual_review`), merged by `createdAt` |
+| `"topup"` | Top-ups only |
+| `"withdraw"` | Withdrawals only |
+
+Also supports **`filters.userId`**, **`filters.fromDate`**, **`filters.toDate`**, and global **`search.value`** (matches reference, gateway ref, account, status).
+
+Example request (combined inbox):
 ```json
 {
-  "page": 1,
-  "limit": 10,
-  "search": "TOPUP-A1B2C3",
-  "sortBy": "createdAt",
-  "sortOrder": "desc",
-  "status": "under_review",
-  "userId": "665a1b2c3d4e5f6789012345",
-  "fromDate": "2026-07-01",
-  "toDate": "2026-07-21"
+  "draw": 1,
+  "start": 0,
+  "length": 10,
+  "columns": [
+    { "data": "createdAt" },
+    { "data": "reviewType" },
+    { "data": "amount" },
+    { "data": "status" }
+  ],
+  "order": [{ "column": 0, "dir": "desc" }],
+  "search": { "value": "" },
+  "filters": {
+    "type": "all",
+    "fromDate": "2026-07-01",
+    "toDate": "2026-07-21"
+  }
 }
 ```
 
-**PATCH `/admin/transactions/:id/approve`**
+Example **response** rows (mixed types):
 ```json
 {
-  "notes": "Verified against bank statement"
+  "success": true,
+  "draw": 1,
+  "recordsTotal": 18,
+  "recordsFiltered": 18,
+  "data": [
+    {
+      "reviewType": "topup",
+      "id": "665a1b2c3d4e5f6789012345",
+      "referenceCode": "TOPUP-A1B2C3",
+      "requestedAmount": 500,
+      "expectedAmount": 500.47,
+      "amount": 500.47,
+      "status": "under_review",
+      "receiptImageUrl": "uploads/receipts/...",
+      "createdAt": "2026-07-21T10:00:00.000Z",
+      "user": { "_id": "...", "name": "Bilal Ahmad", "email": "user@example.com", "phone": null }
+    },
+    {
+      "reviewType": "withdraw",
+      "id": "665a1b2c3d4e5f6789012346",
+      "transactionId": "665a1b2c3d4e5f6789012346",
+      "amount": 500,
+      "status": "pending_manual_review",
+      "destinationAccount": "03001234567",
+      "accountUsed": "jazzcash",
+      "gatewayRef": "WD-1720000000000",
+      "createdAt": "2026-07-21T09:30:00.000Z",
+      "user": { "_id": "...", "name": "Bilal Ahmad", "email": "user@example.com", "phone": "03001234567" }
+    }
+  ],
+  "pagination": { "totalItems": 18, "currentPage": 1, "hasNextPage": true }
 }
 ```
 
-**PATCH `/admin/transactions/:id/reject`**
+### GET `/admin/review/topup/:id`
+
+Top-up detail (includes OCR data, reviewer, user).
+
+### Approve / reject
+
+Use **`id`** and **`reviewType`** from the list row.
+
+**Approve top-up** — `POST /admin/review/topup/:id/approve` (only when `status` is `under_review`)
+```json
+{ "notes": "Verified against bank statement" }
+```
+
+**Approve top-up response** — wallet credited with `expectedAmount`:
 ```json
 {
-  "reason": "Amount on receipt does not match expected transfer"
+  "success": true,
+  "message": "Top-up approved and wallet credited",
+  "data": {
+    "topupRequest": {
+      "id": "665a1b2c3d4e5f6789012345",
+      "referenceCode": "TOPUP-A1B2C3",
+      "expectedAmount": 500.47,
+      "status": "approved"
+    },
+    "transactionId": "665a1b2c3d4e5f6789012347",
+    "balance": 1500.47,
+    "receipt": {
+      "receiptNumber": "RCPT-A1B2C3D4-XYZ",
+      "creditedAmount": 500.47,
+      "currency": "PKR"
+    }
+  }
 }
 ```
 
----
+**Reject top-up** — `POST /admin/review/topup/:id/reject`
+```json
+{ "reason": "Amount on receipt does not match" }
+```
+(`notes` accepted as alias for `reason`.)
 
-## Admin — Withdrawals
+**Approve withdraw** — `POST /admin/review/withdraw/:id/approve` (`:id` = `Transaction._id` from list)
+```json
+{ "notes": "Paid via JazzCash" }
+```
 
-| Method | Route | Token | Role | Payload |
-|--------|-------|-------|------|---------|
-| GET | `/admin/withdrawals/pending` | Yes | Admin | query JSON below |
-| POST | `/admin/withdrawals/:id/approve` | Yes | Admin | JSON below |
-| POST | `/admin/withdrawals/:id/reject` | Yes | Admin | JSON below |
-
-**GET `/admin/withdrawals/pending` query**
+**Approve withdraw response**:
 ```json
 {
-  "page": 1,
-  "limit": 10,
-  "search": "",
-  "sortBy": "createdAt",
-  "sortOrder": "asc"
+  "success": true,
+  "message": "Withdrawal approved",
+  "data": {
+    "transactionId": "665a1b2c3d4e5f6789012345",
+    "status": "success",
+    "balance": 1000,
+    "lockedBalance": 0
+  }
 }
 ```
 
-**POST `/admin/withdrawals/:id/approve`**
+**Reject withdraw** — `POST /admin/review/withdraw/:id/reject`
+```json
+{ "notes": "Invalid account number" }
+```
+(`reason` accepted as alias for `notes`.)
+
+**Reject withdraw response** — amount refunded to `balance`:
 ```json
 {
-  "notes": "Paid via JazzCash"
+  "success": true,
+  "message": "Withdrawal rejected and funds returned",
+  "data": {
+    "transactionId": "665a1b2c3d4e5f6789012345",
+    "status": "rejected",
+    "balance": 1500,
+    "lockedBalance": 0
+  }
 }
 ```
 
-**POST `/admin/withdrawals/:id/reject`**
-```json
-{
-  "notes": "Invalid account number"
-}
-```
+### Wallet balance effects
+
+| Admin action | User `balance` | User `lockedBalance` | Notes |
+|--------------|----------------|----------------------|-------|
+| **Approve top-up** | **+`expectedAmount`** | unchanged | Creates `Transaction` type `topup` · funds on hold until `withdrawHoldHours` |
+| **Reject top-up** | unchanged | unchanged | Request → `rejected` · no wallet movement |
+| **Approve withdraw** | unchanged | **−amount** | Payout confirmed · `Transaction` → `success` |
+| **Reject withdraw** | **+amount** (refund) | **−amount** | Funds returned from lock · `Transaction` → `rejected` |
 
 ---
 

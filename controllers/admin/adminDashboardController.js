@@ -20,7 +20,7 @@ exports.getStats = asyncHandler(async (_req, res) => {
   const todayStart = startOfToday();
   const monthStart = startOfMonth();
 
-  const [topupStats, withdrawalStats, totalUsers] = await Promise.all([
+  const [topupStats, withdrawalStats, totalUsers, pendingWithdrawCount] = await Promise.all([
     TopupRequest.aggregate([
       {
         $facet: {
@@ -80,10 +80,12 @@ exports.getStats = asyncHandler(async (_req, res) => {
       },
     ]),
     User.countDocuments({ deletedAt: null }),
+    Transaction.countDocuments({ type: 'withdraw', status: 'pending_manual_review' }),
   ]);
 
   const topup = topupStats[0] || {};
   const withdrawals = withdrawalStats[0] || {};
+  const pendingTopupCount = topup.pendingReview?.[0]?.count || 0;
 
   const totalRevenue = topup.allTimeApproved?.[0]?.revenue || 0;
 
@@ -105,7 +107,12 @@ exports.getStats = asyncHandler(async (_req, res) => {
       totalGames: null,
       totalGamesNote:
         'No Game model in codebase. Aviator rounds are in-memory only; SpinHistory (wheel) and Transaction game_debit/game_credit are separate metrics.',
-      pendingReviewCount: topup.pendingReview?.[0]?.count || 0,
+      pendingReviewCount: pendingTopupCount + pendingWithdrawCount,
+      pendingReview: {
+        topup: pendingTopupCount,
+        withdraw: pendingWithdrawCount,
+        total: pendingTopupCount + pendingWithdrawCount,
+      },
       todayRevenue: topup.todayApproved?.[0]?.revenue || 0,
       thisMonthRevenue: topup.monthApproved?.[0]?.revenue || 0,
     },

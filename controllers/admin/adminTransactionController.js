@@ -1,7 +1,6 @@
 const path = require('path');
 const TopupRequest = require('../../models/TopupRequest');
 const User = require('../../models/Users');
-const { getPaginatedData } = require('../../services/table.service');
 const { approveTopupRequest } = require('../../services/walletService');
 const { generateReceipt } = require('../../services/receiptService');
 const { reconcileWithBankStatement } = require('../../services/bankReconciliationService');
@@ -13,39 +12,6 @@ const {
   validate,
 } = require('../../services/validationSchema');
 const { asyncHandler, sendSuccess, sendError, normalizeObjectId } = require('../../services/helper');
-
-const buildTopupListQuery = (query) => {
-  const {
-    fromDate,
-    toDate,
-    userId,
-    status,
-    search,
-    page,
-    limit,
-    sortBy,
-    sortOrder,
-  } = query;
-
-  const filters = {};
-  if (status) filters.status = status;
-  if (userId) filters.userId = userId;
-
-  if (fromDate || toDate) {
-    filters.createdAt = {};
-    if (fromDate) filters.createdAt.$gte = new Date(fromDate);
-    if (toDate) filters.createdAt.$lte = new Date(toDate);
-  }
-
-  return {
-    page,
-    limit,
-    search,
-    sortBy,
-    sortOrder,
-    ...filters,
-  };
-};
 
 const notifyTopupRejected = async (user, topupRequest, reason) => {
   if (!user?.email) return;
@@ -61,26 +27,6 @@ const notifyTopupRejected = async (user, topupRequest, reason) => {
     console.warn('Top-up rejection email failed:', error.message);
   }
 };
-
-exports.listTransactions = asyncHandler(async (req, res) => {
-  const queryParams = buildTopupListQuery(req.query);
-  const result = await getPaginatedData(
-    TopupRequest,
-    queryParams,
-    ['referenceCode'],
-    { populate: { path: 'userId', select: 'name email phone' } },
-  );
-
-  sendSuccess(res, {
-    data: {
-      transactions: result.rows.map((row) => ({
-        ...formatTopupRequest(row),
-        user: row.userId || null,
-      })),
-      pagination: result.pagination,
-    },
-  });
-});
 
 exports.getTransaction = asyncHandler(async (req, res) => {
   const id = normalizeObjectId(req.params.id);
