@@ -1,5 +1,4 @@
 const express = require("express");
-
 const authRoutes = require("./authRoutes");
 const userRoutes = require("./userRoutes");
 const userController = require("../controllers/userController");
@@ -9,8 +8,6 @@ const topupRoutes = require("./topupRoutes");
 const adminRoutes = require("./admin");
 const spinRoutes = require("./spinRoutes");
 const referralRoutes = require("./referralRoutes");
-
-// NEW: Import the Aviator game routes from the games folder
 const aviatorRoutes = require("../games/aviator/aviator.routes");
 
 const router = express.Router();
@@ -24,7 +21,10 @@ router.use("/admin", adminRoutes);
 router.use("/spin", spinRoutes);
 router.use("/referrals", referralRoutes);
 
-// NEW: Connect the Aviator game to the /games/aviator endpoint
+// FIX: Maps the frontend config (BASE_URL + '/api/bets/getBetsById')
+router.use("/bets", aviatorRoutes);
+
+// Still available under games/aviator if you need it for state polling
 router.use("/games/aviator", aviatorRoutes);
 
 router.get("/health", (req, res) => {

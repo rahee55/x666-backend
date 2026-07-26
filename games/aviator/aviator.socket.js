@@ -4,17 +4,20 @@ const { v4: uuidv4 } = require('uuid');
 
 let wss;
 
-// Game State Engine
-let gameState = {
-    status: 'WAITING', // WAITING, FLYING, CRASHED
+const gameState = {
+    status: 'WAIT', 
     roundId: null,
     currentMultiplier: 1.00,
     targetCrash: null,
-    timeRemaining: 5, // 5 seconds wait time between rounds
+    timeRemaining: 5,
+    totalBetPool: 0,
+    totalPayoutDistributed: 0,
     history: []
 };
 
-// Broadcasts data to all connected Angular clients
+// Tracks active bets to prevent double cashouts
+const activeBets = new Map();
+
 const broadcast = (data) => {
     if (!wss) return;
     wss.clients.forEach((client) => {
@@ -24,65 +27,105 @@ const broadcast = (data) => {
     });
 };
 
-// The Continuous Game Loop
+const triggerSystemCrash = (finalCrashPoint) => {
+    gameState.status = 'crash';
+    gameState.history.push(finalCrashPoint);
+    if (gameState.history.length > 30) gameState.history.shift();
+
+    broadcast({ key: 'crash', value: finalCrashPoint, history: gameState.history });
+
+    setTimeout(() => {
+        gameState.status = 'WAIT';
+        gameState.timeRemaining = 5;
+        gameState.totalBetPool = 0;
+        gameState.totalPayoutDistributed = 0;
+        activeBets.clear();
+    }, 3000);
+};
+
 const runGameLoop = () => {
     setInterval(() => {
-        if (gameState.status === 'WAITING') {
-            gameState.timeRemaining -= 1;
-            broadcast({ type: 'WAITING', timeRemaining: gameState.timeRemaining, history: gameState.history });
+        if (gameState.status === 'WAIT') {
+            gameState.timeRemaining -= 0.1; 
+            
+            // Send WAIT state every full second
+            if (Number.isInteger(Math.round(gameState.timeRemaining))) {
+                broadcast({ key: 'WAIT', timeRemaining: Math.round(gameState.timeRemaining), history: gameState.history });
+            }
 
             if (gameState.timeRemaining <= 0) {
-                // Start the flight
-                gameState.status = 'FLYING';
+                gameState.status = 'RUN';
                 gameState.roundId = uuidv4();
                 gameState.targetCrash = aviatorService.generateTargetMultiplier();
                 gameState.currentMultiplier = 1.00;
+                broadcast({ key: 'roundId', value: gameState.roundId });
             }
         } 
-        else if (gameState.status === 'FLYING') {
-            // Increase multiplier (adjust the 0.01 increment for speed)
+        else if (gameState.status === 'RUN') {
             gameState.currentMultiplier += 0.01;
-            broadcast({ type: 'FLYING', multiplier: parseFloat(gameState.currentMultiplier.toFixed(2)) });
+            broadcast({ key: 'RUNValue', value: parseFloat(gameState.currentMultiplier.toFixed(2)) });
 
             if (gameState.currentMultiplier >= gameState.targetCrash) {
-                // Plane crashes
-                gameState.status = 'CRASHED';
-                
-                // Save to history
-                gameState.history.push(gameState.targetCrash);
-                if (gameState.history.length > 10) gameState.history.shift();
-
-                broadcast({ type: 'CRASHED', crashedAt: gameState.targetCrash, history: gameState.history });
-
-                // Reset for next round after 3 seconds
-                setTimeout(() => {
-                    gameState.status = 'WAITING';
-                    gameState.timeRemaining = 5;
-                }, 3000);
+                triggerSystemCrash(gameState.targetCrash);
             }
         }
-    }, 100); // Ticks every 100ms
+    }, 100); 
 };
 
 const initSocket = (server) => {
     wss = new WebSocket.Server({ server });
 
     wss.on('connection', (ws) => {
-        console.log('New player connected to Aviator');
-        
-        // Send immediate current state to new player
         ws.send(JSON.stringify({
-            type: 'INIT',
-            state: gameState
+            key: gameState.status,
+            value: gameState.currentMultiplier,
+            roundId: gameState.roundId
         }));
 
-        ws.on('close', () => {
-            console.log('Player disconnected');
+        ws.on('message', (message) => {
+            try {
+                const parsedMsg = JSON.parse(message);
+                const data = Array.isArray(parsedMsg) ? parsedMsg[0] : parsedMsg;
+
+                if (data.action === 'PlaceBet') {
+                    if (gameState.status !== 'WAIT') return;
+                    
+                    gameState.totalBetPool += parseFloat(data.stake);
+                    const betId = uuidv4();
+                    activeBets.set(betId, { stake: data.stake, betType: data.betType });
+                    
+                    // DB LOGIC HERE: Insert bet record into Database
+                }
+
+                if (data.action === 'CancelBet') {
+                    if (gameState.status !== 'WAIT') return;
+                    // DB LOGIC HERE: Remove or mark bet as cancelled in Database
+                }
+
+                if (data.action === 'CashoutBet') {
+                    if (gameState.status !== 'RUN') return;
+                    
+                    const clientMultiplier = parseFloat(data.RUNValue);
+                    if (clientMultiplier > gameState.currentMultiplier) return;
+
+                    const payout = parseFloat(data.stake) * clientMultiplier;
+                    const theoreticalPayoutPool = gameState.totalPayoutDistributed + payout;
+
+                    if (aviatorService.shouldForceCrash(gameState.totalBetPool, theoreticalPayoutPool)) {
+                        return triggerSystemCrash(clientMultiplier);
+                    }
+
+                    gameState.totalPayoutDistributed += payout;
+                    
+                    // DB LOGIC HERE: Update User balance and mark bet as Won in Database
+                }
+            } catch (err) {
+                console.error('Failed to parse WS message:', err);
+            }
         });
     });
 
-    // Start the never-ending loop
     runGameLoop();
 };
 
-module.exports = { initSocket };
+module.exports = { initSocket, getGameState: () => gameState };

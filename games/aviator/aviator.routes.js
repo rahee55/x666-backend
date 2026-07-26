@@ -1,14 +1,11 @@
-// games/aviator/aviator.routes.js
 const express = require('express');
 const router = express.Router();
 const aviatorController = require('./aviator.controller');
+const auth = require('../../middleware/auth'); // Adjust path if needed
 
-// Main Game Routine Actions
-router.post('/start-round', aviatorController.startNewRound);
-router.post('/place-bet', aviatorController.placeBet);
-router.post('/cashout', aviatorController.cashout);
+router.get('/state', aviatorController.getActiveState);
 
-// Polling/Sync Endpoint for Frontend Display Updates
-router.get('/state', aviatorController.getGameState);
+// FIX: Changed from router.get to router.post to match your Angular frontend
+router.post('/getBetsById', auth, aviatorController.getBetsById);
 
 module.exports = router;
