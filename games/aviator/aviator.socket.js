@@ -25,10 +25,12 @@ const gameState = {
     roundId: null,
     currentMultiplier: 1.00,
     targetCrash: null,
+    crashMultiplier: null,
     timeRemaining: 5,
     totalBetPool: 0,
     totalPayoutDistributed: 0,
-    history: []
+    history: [],
+    runStartTime: null // Added: Tracks the exact millisecond the plane took off
 };
 
 // Tracks active bets to prevent double cashouts
@@ -99,9 +101,16 @@ const parseStake = (value) => {
     return Math.round(stake * 100) / 100;
 };
 
-const sendBetError = (ws, message) => {
-    sendWs(ws, { key: 'betError', message });
+const sendBetError = (ws, message, failedAction = null, betType = null) => {
+    sendWs(ws, {
+        key: 'betError',
+        message,
+        failedAction,
+        betType: betType != null ? String(betType) : null,
+    });
 };
+
+const resolveBetId = (data) => data.betId || data.betid || null;
 
 const getBetForUser = (betId, userId) => {
     if (!betId || !activeBets.has(betId)) {
@@ -168,7 +177,10 @@ const broadcast = (data) => {
 };
 
 const triggerSystemCrash = (finalCrashPoint) => {
+    if (gameState.status === 'crash') return;
+
     gameState.status = 'crash';
+    gameState.crashMultiplier = finalCrashPoint;
     gameState.history.push(finalCrashPoint);
     if (gameState.history.length > 30) gameState.history.shift();
 
@@ -179,9 +191,72 @@ const triggerSystemCrash = (finalCrashPoint) => {
         gameState.timeRemaining = 5;
         gameState.totalBetPool = 0;
         gameState.totalPayoutDistributed = 0;
+        gameState.crashMultiplier = null;
         activeBets.clear();
     }, 3000);
 };
+
+const isCashoutAllowed = () =>
+    gameState.status === 'RUN' || gameState.status === 'crash';
+
+const isValidCashoutMultiplier = (clientMultiplier) => {
+    if (!Number.isFinite(clientMultiplier) || clientMultiplier <= 1) {
+        return false;
+    }
+
+    if (gameState.status === 'RUN') {
+        return clientMultiplier <= gameState.currentMultiplier + 0.05;
+    }
+
+    if (gameState.status === 'crash' && gameState.crashMultiplier !== null) {
+        return clientMultiplier <= gameState.crashMultiplier + 0.01;
+    }
+
+    return false;
+};
+
+const processCashout = async (ws, bet, cashoutBetId, clientMultiplier) => {
+    if (bet.status === 'cashing_out' || bet.status === 'cashed_out') {
+        return { error: 'Cashout already in progress' };
+    }
+
+    bet.status = 'cashing_out';
+
+    const payout = Math.round(bet.stake * clientMultiplier * 100) / 100;
+
+    try {
+        const { wallet } = await creditWallet(ws.userId, payout, 'game_credit', {
+            gatewayRef: `AVIATOR-WIN-${cashoutBetId}`,
+        });
+
+        bet.status = 'cashed_out';
+        bet.cashoutMultiplier = clientMultiplier;
+        bet.payout = payout;
+        gameState.totalPayoutDistributed += payout;
+        activeBets.delete(cashoutBetId);
+
+        sendWs(ws, {
+            key: 'cashout',
+            betId: cashoutBetId,
+            betType: bet.betType,
+            stake: bet.stake,
+            multiplier: clientMultiplier,
+            payout,
+            profit: Math.round((payout - bet.stake) * 100) / 100,
+            balance: wallet.balance,
+        });
+
+        return { success: true, payout };
+    } catch (error) {
+        bet.status = 'active';
+        sendBetError(ws, error.message || 'Unable to cash out', 'CashoutBet', bet.betType);
+        return { error: error.message || 'Unable to cash out' };
+    }
+};
+
+// The constant rate at which the plane accelerates. 
+// Tweak this slightly up (e.g., 0.075) for faster games, or down (e.g., 0.055) for slower games.
+const GROWTH_RATE = 0.065; 
 
 const runGameLoop = () => {
     setInterval(() => {
@@ -198,29 +273,34 @@ const runGameLoop = () => {
                 gameState.roundId = uuidv4();
                 assignPendingBetsToRound(gameState.roundId);
                 gameState.targetCrash = aviatorService.generateTargetMultiplier();
+                
+                // Record exact takeoff time
+                gameState.runStartTime = Date.now();
                 gameState.currentMultiplier = 1.00;
+                
                 broadcast({ key: 'roundId', value: gameState.roundId });
             }
         } 
         else if (gameState.status === 'RUN') {
-            
-            // --- NEW LOGIC: DYNAMIC SPEED UP ---
-            if (gameState.currentMultiplier >= 50) {
-                gameState.currentMultiplier += 0.50; // Super fast above 50x
-            } else if (gameState.currentMultiplier >= 20) {
-                gameState.currentMultiplier += 0.15; // Faster above 20x
-            } else if (gameState.currentMultiplier >= 10) {
-                gameState.currentMultiplier += 0.05; // Speeds up above 10x
+            // --- NEW LOGIC: CONTINUOUS EXPONENTIAL GROWTH ---
+            const elapsedMs = Date.now() - gameState.runStartTime;
+            const elapsedSeconds = elapsedMs / 1000;
+
+            // M = e^(r * t)
+            let nextMultiplier = Math.exp(GROWTH_RATE * elapsedSeconds);
+
+            if (nextMultiplier >= gameState.targetCrash) {
+                gameState.currentMultiplier = gameState.targetCrash;
+                triggerSystemCrash(parseFloat(gameState.targetCrash.toFixed(2)));
             } else {
-                gameState.currentMultiplier += 0.01; // Normal speed (under 10x)
+                gameState.currentMultiplier = nextMultiplier;
+                
+                broadcast({ 
+                    key: 'RUNValue', 
+                    value: parseFloat(gameState.currentMultiplier.toFixed(2)) 
+                });
             }
-            // -----------------------------------
-
-            broadcast({ key: 'RUNValue', value: parseFloat(gameState.currentMultiplier.toFixed(2)) });
-
-            if (gameState.currentMultiplier >= gameState.targetCrash) {
-                triggerSystemCrash(gameState.targetCrash);
-            }
+            // ------------------------------------------------
         }
     }, 100); 
 };
@@ -269,13 +349,13 @@ const initSocket = (server) => {
                 if (data.action === 'PlaceBet') {
                     if (!requireAuth(ws)) return;
                     if (gameState.status !== 'WAIT') {
-                        sendBetError(ws, 'Bets can only be placed during the waiting period');
+                        sendBetError(ws, 'Bets can only be placed during the waiting period', 'PlaceBet', data.betType);
                         return;
                     }
 
                     const stake = parseStake(data.stake);
                     if (!stake) {
-                        sendBetError(ws, 'Invalid bet amount');
+                        sendBetError(ws, 'Invalid bet amount', 'PlaceBet', data.betType);
                         return;
                     }
 
@@ -298,107 +378,95 @@ const initSocket = (server) => {
                         sendWs(ws, {
                             key: 'betPlaced',
                             betId,
+                            betType: data.betType != null ? String(data.betType) : null,
                             stake,
                             balance: wallet.balance,
                             roundId: gameState.roundId,
                         });
                     } catch (error) {
-                        sendBetError(ws, error.message || 'Unable to place bet');
+                        sendBetError(ws, error.message || 'Unable to place bet', 'PlaceBet', data.betType);
                     }
                 }
 
                 if (data.action === 'CancelBet') {
                     if (!requireAuth(ws)) return;
                     if (gameState.status !== 'WAIT') {
-                        sendBetError(ws, 'Bets can only be cancelled during the waiting period');
+                        sendBetError(ws, 'Bets can only be cancelled during the waiting period', 'CancelBet', data.betType);
                         return;
                     }
 
-                    const bet = getBetForUser(data.betId, ws.userId);
+                    const cancelBetId = resolveBetId(data);
+                    const bet = getBetForUser(cancelBetId, ws.userId);
                     if (!bet || bet.status !== 'active') {
-                        sendBetError(ws, 'Bet not found');
+                        sendBetError(ws, 'Bet not found', 'CancelBet', data.betType);
                         return;
                     }
 
                     try {
                         const { wallet } = await creditWallet(ws.userId, bet.stake, 'game_credit', {
-                            gatewayRef: `AVIATOR-CANCEL-${data.betId}`,
+                            gatewayRef: `AVIATOR-CANCEL-${cancelBetId}`,
                         });
 
                         bet.status = 'cancelled';
                         gameState.totalBetPool = Math.max(0, gameState.totalBetPool - bet.stake);
-                        activeBets.delete(data.betId);
+                        activeBets.delete(cancelBetId);
 
                         sendWs(ws, {
                             key: 'betCancelled',
-                            betId: data.betId,
+                            betId: cancelBetId,
+                            betType: bet.betType != null ? String(bet.betType) : data.betType,
                             refunded: bet.stake,
                             balance: wallet.balance,
                         });
                     } catch (error) {
-                        sendBetError(ws, error.message || 'Unable to cancel bet');
+                        sendBetError(ws, error.message || 'Unable to cancel bet', 'CancelBet', data.betType);
                     }
                 }
 
                 if (data.action === 'CashoutBet') {
                     if (!requireAuth(ws)) return;
-                    if (gameState.status !== 'RUN') {
-                        sendBetError(ws, 'Cashout is only available while the round is running');
+                    if (!isCashoutAllowed()) {
+                        sendBetError(ws, 'Cashout is only available while the round is running', 'CashoutBet', data.betType);
                         return;
                     }
 
-                    const bet = getBetForUser(data.betId, ws.userId);
-                    if (!bet || bet.status !== 'active') {
-                        sendBetError(ws, 'Bet not found');
+                    const cashoutBetId = resolveBetId(data);
+                    const bet = getBetForUser(cashoutBetId, ws.userId);
+                    if (!bet) {
+                        sendBetError(ws, 'Bet not found', 'CashoutBet', data.betType);
+                        return;
+                    }
+
+                    if (bet.status === 'cashing_out') {
+                        return;
+                    }
+
+                    if (bet.status !== 'active') {
+                        sendBetError(ws, 'Bet not found', 'CashoutBet', data.betType);
                         return;
                     }
 
                     if (bet.roundId && bet.roundId !== gameState.roundId) {
-                        sendBetError(ws, 'Bet is not for the current round');
+                        sendBetError(ws, 'Bet is not for the current round', 'CashoutBet', data.betType);
                         return;
                     }
 
                     const clientMultiplier = Number.parseFloat(data.RUNValue);
-                    if (!Number.isFinite(clientMultiplier) || clientMultiplier <= 1) {
-                        sendBetError(ws, 'Invalid cashout multiplier');
-                        return;
-                    }
-
-                    if (clientMultiplier > gameState.currentMultiplier) {
-                        sendBetError(ws, 'Cashout multiplier exceeds current multiplier');
+                    if (!isValidCashoutMultiplier(clientMultiplier)) {
+                        sendBetError(ws, 'Invalid cashout multiplier', 'CashoutBet', data.betType);
                         return;
                     }
 
                     const payout = Math.round(bet.stake * clientMultiplier * 100) / 100;
                     const theoreticalPayoutPool = gameState.totalPayoutDistributed + payout;
+                    const shouldCrashAfterCashout = aviatorService.shouldForceCrash(
+                        gameState.totalBetPool,
+                        theoreticalPayoutPool,
+                    );
 
-                    if (aviatorService.shouldForceCrash(gameState.totalBetPool, theoreticalPayoutPool)) {
+                    const result = await processCashout(ws, bet, cashoutBetId, clientMultiplier);
+                    if (result.success && shouldCrashAfterCashout) {
                         triggerSystemCrash(clientMultiplier);
-                        return;
-                    }
-
-                    try {
-                        const { wallet } = await creditWallet(ws.userId, payout, 'game_credit', {
-                            gatewayRef: `AVIATOR-WIN-${data.betId}`,
-                        });
-
-                        bet.status = 'cashed_out';
-                        bet.cashoutMultiplier = clientMultiplier;
-                        bet.payout = payout;
-                        gameState.totalPayoutDistributed += payout;
-                        activeBets.delete(data.betId);
-
-                        sendWs(ws, {
-                            key: 'cashout',
-                            betId: data.betId,
-                            stake: bet.stake,
-                            multiplier: clientMultiplier,
-                            payout,
-                            profit: Math.round((payout - bet.stake) * 100) / 100,
-                            balance: wallet.balance,
-                        });
-                    } catch (error) {
-                        sendBetError(ws, error.message || 'Unable to cash out');
                     }
                 }
             } catch (err) {
