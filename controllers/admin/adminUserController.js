@@ -1,7 +1,7 @@
 const User = require('../../models/Users');
 const Wallet = require('../../models/Wallet');
 const Transaction = require('../../models/Transaction');
-const { getPaginatedData } = require('../../services/table.service');
+const { makeDataTable } = require('../../services/table.service');
 const { formatAdminUser } = require('../../services/userService');
 const { normalizePhone } = require('../../services/otpService');
 const {
@@ -14,41 +14,19 @@ const {
 } = require('../../services/validationSchema');
 const { asyncHandler, sendSuccess, sendError, normalizeObjectId } = require('../../services/helper');
 
-const buildUserListQuery = (query) => {
-  const { fromDate, toDate, role, status, search, page, limit, sortBy, sortOrder } =
-    query;
-
-  const filters = { deletedAt: null };
-  if (role) filters.role = role;
-  if (status) filters.status = status;
-
-  if (fromDate || toDate) {
-    filters.createdAt = {};
-    if (fromDate) filters.createdAt.$gte = new Date(fromDate);
-    if (toDate) filters.createdAt.$lte = new Date(toDate);
-  }
-
-  return {
-    page,
-    limit,
-    search,
-    sortBy,
-    sortOrder,
-    ...filters,
-  };
-};
-
 exports.listUsers = asyncHandler(async (req, res) => {
-  const queryParams = buildUserListQuery(req.query);
-  const result = await getPaginatedData(User, queryParams, ['name', 'email', 'phone'], {
-    filters: {},
+  const result = await makeDataTable(User, req, {
+    baseFilters: { deletedAt: null },
+    searchFields: ['name', 'email', 'phone', 'referralCode'],
+    defaultSort: { createdAt: -1 },
   });
 
   sendSuccess(res, {
-    data: {
-      users: result.rows.map((user) => formatAdminUser(user)),
-      pagination: result.pagination,
-    },
+    draw: result.draw,
+    recordsTotal: result.recordsTotal,
+    recordsFiltered: result.recordsFiltered,
+    data: result.data.map((user) => formatAdminUser(user)),
+    pagination: result.pagination,
   });
 });
 
@@ -123,6 +101,15 @@ exports.updateUser = asyncHandler(async (req, res) => {
   const id = normalizeObjectId(req.params.id);
   if (!id) return sendError(res, 'Invalid user id', 400);
 
+  if (req.body.password !== undefined || req.body.confirmPassword !== undefined) {
+    return sendError(res, 'Password cannot be updated via this endpoint', 400);
+  }
+
+  ['isPhoneVerified', 'isEmailVerified'].forEach((field) => {
+    if (req.body[field] === 'true') req.body[field] = true;
+    if (req.body[field] === 'false') req.body[field] = false;
+  });
+
   const errors = validate(adminUpdateUserSchema, req.body);
   if (errors.length) return sendError(res, errors.join(', '));
 
@@ -130,7 +117,17 @@ exports.updateUser = asyncHandler(async (req, res) => {
   if (!user) return sendError(res, 'User not found', 404);
 
   if (req.body.name !== undefined) user.name = req.body.name.trim();
+
   if (req.body.kycStatus !== undefined) user.kycStatus = req.body.kycStatus;
+
+  if (req.body.isPhoneVerified !== undefined) {
+    user.isPhoneVerified = req.body.isPhoneVerified;
+  }
+
+  if (req.body.isEmailVerified !== undefined) {
+    user.isEmailVerified = req.body.isEmailVerified;
+  }
+
   if (req.body.role !== undefined) {
     if (String(user._id) === String(req.user._id) && req.body.role !== 'admin') {
       return sendError(res, 'You cannot remove your own admin role', 400);
@@ -138,26 +135,47 @@ exports.updateUser = asyncHandler(async (req, res) => {
     user.role = req.body.role;
   }
 
+  if (req.body.status !== undefined) {
+    if (String(user._id) === String(req.user._id) && req.body.status !== 'active') {
+      return sendError(res, 'You cannot change your own account status', 400);
+    }
+    user.status = req.body.status;
+  }
+
   if (req.body.email !== undefined) {
-    const normalizedEmail = req.body.email.trim().toLowerCase();
-    const emailTaken = await User.findOne({
-      email: normalizedEmail,
-      _id: { $ne: user._id },
-      deletedAt: null,
-    });
-    if (emailTaken) return sendError(res, 'Email already registered', 409);
-    user.email = normalizedEmail;
+    const rawEmail = req.body.email;
+    if (rawEmail === null || String(rawEmail).trim() === '') {
+      user.email = undefined;
+    } else {
+      const normalizedEmail = String(rawEmail).trim().toLowerCase();
+      const emailTaken = await User.findOne({
+        email: normalizedEmail,
+        _id: { $ne: user._id },
+        deletedAt: null,
+      });
+      if (emailTaken) return sendError(res, 'Email already registered', 409);
+      user.email = normalizedEmail;
+    }
   }
 
   if (req.body.phone !== undefined) {
-    const normalizedPhone = normalizePhone(req.body.phone.trim());
-    const phoneTaken = await User.findOne({
-      phone: normalizedPhone,
-      _id: { $ne: user._id },
-      deletedAt: null,
-    });
-    if (phoneTaken) return sendError(res, 'Phone already registered', 409);
-    user.phone = normalizedPhone;
+    const rawPhone = req.body.phone;
+    if (rawPhone === null || String(rawPhone).trim() === '') {
+      user.phone = undefined;
+    } else {
+      const normalizedPhone = normalizePhone(String(rawPhone).trim());
+      const phoneTaken = await User.findOne({
+        phone: normalizedPhone,
+        _id: { $ne: user._id },
+        deletedAt: null,
+      });
+      if (phoneTaken) return sendError(res, 'Phone already registered', 409);
+      user.phone = normalizedPhone;
+    }
+  }
+
+  if (!user.phone && !user.email) {
+    return sendError(res, 'User must have at least phone or email', 400);
   }
 
   await user.save();

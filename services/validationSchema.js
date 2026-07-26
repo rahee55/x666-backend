@@ -162,10 +162,13 @@ const adminUpdateUserSchema = {
   phone: { type: "string" },
   email: { type: "string" },
   role: { type: "string", enum: ["user", "admin"] },
+  status: { type: "string", enum: ["active", "suspended", "banned"] },
   kycStatus: {
     type: "string",
     enum: ["pending", "submitted", "approved", "rejected"],
   },
+  isPhoneVerified: { type: "boolean" },
+  isEmailVerified: { type: "boolean" },
 };
 
 const adminUpdateUserStatusSchema = {
