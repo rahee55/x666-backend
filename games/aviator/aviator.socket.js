@@ -380,7 +380,6 @@ const initSocket = (server) => {
                             betId,
                             betType: data.betType != null ? String(data.betType) : null,
                             stake,
-                            betType: data.betType || null,
                             balance: wallet.balance,
                             roundId: gameState.roundId,
                         });
