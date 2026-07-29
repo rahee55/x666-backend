@@ -28,7 +28,12 @@ router.use("/bets", aviatorRoutes);
 router.use("/games/aviator", aviatorRoutes);
 
 router.get("/health", (req, res) => {
-  res.json({ success: true, message: "API is running" });
+  const { getWebSocketPath } = require("../games/aviator/aviator.socket");
+  res.json({
+    success: true,
+    message: "API is running",
+    websocketPath: getWebSocketPath(),
+  });
 });
 
 module.exports = router;
