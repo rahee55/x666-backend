@@ -368,6 +368,7 @@ const initSocket = (server) => {
                 console.error('Failed to parse WS message:', err);
             }
         });
+        
     });
 
     runGameLoop();
