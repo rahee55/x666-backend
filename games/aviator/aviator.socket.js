@@ -287,7 +287,6 @@ const initSocket = (server) => {
                             key: 'betPlaced',
                             betId,
                             stake,
-                            betType: data.betType || null,
                             balance: wallet.balance,
                             roundId: gameState.roundId,
                         });
@@ -321,7 +320,6 @@ const initSocket = (server) => {
                         sendWs(ws, {
                             key: 'betCancelled',
                             betId: data.betId,
-                            betType: bet.betType || data.betType || null,
                             refunded: bet.stake,
                             balance: wallet.balance,
                         });
@@ -381,7 +379,6 @@ const initSocket = (server) => {
                         sendWs(ws, {
                             key: 'cashout',
                             betId: data.betId,
-                            betType: bet.betType || data.betType || null,
                             stake: bet.stake,
                             multiplier: clientMultiplier,
                             payout,
