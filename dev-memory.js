@@ -4,8 +4,18 @@ const mongoose = require('mongoose');
 
 const startMemoryServer = async () => {
   const mongod = await MongoMemoryServer.create();
-  process.env.MONGODB_URI = mongod.getUri('x666');
+  const memoryUri = mongod.getUri('x666');
+  process.env.MONGODB_URI = memoryUri;
   console.log('In-memory MongoDB started');
+
+  const dotenv = require('dotenv');
+  const originalConfig = dotenv.config;
+  dotenv.config = (opts) => {
+    const savedUri = process.env.MONGODB_URI;
+    const result = originalConfig(opts);
+    process.env.MONGODB_URI = savedUri;
+    return result;
+  };
 
   const shutdown = async () => {
     await mongoose.disconnect();
