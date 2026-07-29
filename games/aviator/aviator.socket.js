@@ -7,6 +7,19 @@ const { v4: uuidv4 } = require('uuid');
 
 let wss;
 
+const WS_PATH = process.env.WS_PATH || '/api/ws';
+
+const isOriginAllowed = (origin) => {
+    const allowedOrigins = (process.env.WS_ALLOWED_ORIGINS || '*')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+
+    if (allowedOrigins.includes('*')) return true;
+    if (!origin) return true;
+    return allowedOrigins.includes(origin);
+};
+
 const gameState = {
     status: 'WAIT', 
     roundId: null,
@@ -201,7 +214,19 @@ const runGameLoop = () => {
 };
 
 const initSocket = (server) => {
-    wss = new WebSocket.Server({ server });
+    wss = new WebSocket.Server({
+        server,
+        path: WS_PATH,
+        verifyClient: (info, callback) => {
+            if (isOriginAllowed(info.origin)) {
+                callback(true);
+                return;
+            }
+            callback(false, 403, 'Origin not allowed');
+        },
+    });
+
+    console.log(`Aviator WebSocket listening on ${WS_PATH}`);
 
     wss.on('connection', async (ws, req) => {
         ws.authenticated = false;
@@ -374,4 +399,8 @@ const initSocket = (server) => {
     runGameLoop();
 };
 
-module.exports = { initSocket, getGameState: () => gameState };
+module.exports = {
+    initSocket,
+    getGameState: () => gameState,
+    getWebSocketPath: () => WS_PATH,
+};
