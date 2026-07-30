@@ -250,18 +250,21 @@ const approveTopupRequest = async (topupRequest, { reviewedBy = null } = {}) => 
 const queueWithdrawForManualReview = async (
   userId,
   amount,
-  {
-    destinationAccount,
-    accountUsed = "other",
-    gatewayRef = null,
-  } = {},
+  { destinationAccount, accountUsed = "other", gatewayRef = null } = {},
 ) => {
-  const withdrawable = await getWithdrawableBalance(userId);
-  if (withdrawable < amount) {
-    const error = new Error(
-      "Insufficient withdrawable balance. Recent top-ups may still be on hold.",
-    );
-    error.status = 402;
+  const withdrawAmount = Number(amount);
+
+  // Amount validation
+  if (!Number.isFinite(withdrawAmount) || withdrawAmount <= 0) {
+    const error = new Error("Withdrawal amount must be greater than zero.");
+    error.status = 400;
+    throw error;
+  }
+
+  // Destination account validation
+  if (!destinationAccount) {
+    const error = new Error("Destination account is required.");
+    error.status = 400;
     throw error;
   }
 
@@ -271,24 +274,46 @@ const queueWithdrawForManualReview = async (
   try {
     const wallet = await Wallet.findOne({ userId }).session(session);
 
-    if (!wallet || wallet.balance < amount) {
-      throw new Error("Insufficient balance");
+    if (!wallet) {
+      const error = new Error("Wallet not found.");
+      error.status = 404;
+      throw error;
     }
 
-    wallet.balance -= amount;
-    wallet.lockedBalance += amount;
+   
+    if (Number(wallet.balance || 0) < withdrawAmount) {
+      const error = new Error("Insufficient wallet balance.");
+      error.status = 402;
+      throw error;
+    }
+
+    wallet.balance = Number(wallet.balance || 0) - withdrawAmount;
+
+    wallet.lockedBalance = Number(wallet.lockedBalance || 0) + withdrawAmount;
+
     await wallet.save({ session });
 
-    const transaction = await recordTransaction(userId, "withdraw", amount, {
-      status: "pending_manual_review",
-      gatewayRef,
-      accountUsed,
-      destinationAccount,
-      session,
-    });
+
+    const transaction = await recordTransaction(
+      userId,
+      "withdraw",
+      withdrawAmount,
+      {
+        status: "pending_manual_review",
+        gatewayRef,
+        accountUsed,
+        destinationAccount,
+        session,
+      },
+    );
 
     await session.commitTransaction();
-    return { wallet, transaction };
+
+    return {
+      wallet,
+      transaction,
+      message: "Withdrawal request sent to admin for manual review.",
+    };
   } catch (error) {
     await session.abortTransaction();
     throw error;
