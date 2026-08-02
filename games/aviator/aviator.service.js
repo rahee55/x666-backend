@@ -20,7 +20,7 @@ class AviatorService {
         } else if (rand <= 99.9) {
             return this.getRandom(200.00, 300.00);    // 0.2% chance (99.71 to 99.90)
         } else {
-            return this.getRandom(300.00, 501.00);    // 0.1% chance (99.91 to 100.00)
+            return this.getRandom(300.00, 666.00);    // 0.1% chance (99.91 to 100.00)
         }
     }
 
