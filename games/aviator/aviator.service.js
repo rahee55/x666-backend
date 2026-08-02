@@ -11,20 +11,16 @@ class AviatorService {
             return this.getRandom(5.00, 10.00);       // 5% chance
         } else if (rand <= 95) {
             return this.getRandom(10.00, 20.00);      // 5% chance
+        } else if (rand <= 98) {
+            return this.getRandom(20.00, 50.00);      // 3% chance (95.01 to 98.00)
+        } else if (rand <= 99) {
+            return this.getRandom(50.00, 100.00);     // 1% chance (98.01 to 99.00)
+        } else if (rand <= 99.7) {
+            return this.getRandom(100.00, 150.00);    // 0.7% chance (99.01 to 99.70)
+        } else if (rand <= 99.9) {
+            return this.getRandom(200.00, 300.00);    // 0.2% chance (99.71 to 99.90)
         } else {
-            // This block handles the remaining 5% (when rand is 95.01 to 100)
-            const extremeRand = Math.random();
-            
-            if (extremeRand > 0.999) { 
-                // 0.1% of the 5% chance: Massive Jackpot
-                return this.getRandom(5000.00, 10000.00); 
-            } else if (extremeRand > 0.95) {
-                // 4.9% of the 5% chance: Huge Win
-                return this.getRandom(100.00, 5000.00);
-            } else {
-                // 95% of the 5% chance: Big Win (Adjusted to start at 20.00)
-                return this.getRandom(20.00, 100.00);
-            }
+            return this.getRandom(300.00, 501.00);    // 0.1% chance (99.91 to 100.00)
         }
     }
 
@@ -36,7 +32,7 @@ class AviatorService {
         if (totalBetAmount === 0) return false;
         
         const cashoutRatio = totalCashedOutAmount / totalBetAmount;
-        return cashoutRatio >= 0.60;
+        return cashoutRatio >= 0.70;
     }
 }
 
