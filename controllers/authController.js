@@ -143,15 +143,27 @@ exports.login = asyncHandler(async (req, res) => {
   const user = await User.findOne(query).select('+password');
 
   if (!user || !(await user.comparePassword(password))) {
-    return sendError(res, 'Invalid credentials', 401);
+    return sendError(
+      res,
+      'The email or password you entered is incorrect. Please check your details and try again.',
+      401,
+    );
   }
 
   if (user.deletedAt) {
-    return sendError(res, 'Invalid credentials', 401);
+    return sendError(
+      res,
+      'This account is no longer available. Please contact support if you need assistance.',
+      401,
+    );
   }
 
   if (user.status !== 'active') {
-    return sendError(res, `Account is ${user.status}`, 403);
+    return sendError(
+      res,
+      `Your account is currently ${user.status}. Please contact support for help.`,
+      403,
+    );
   }
 
   const token = signToken(user);

@@ -5,7 +5,9 @@ const generateReferralCode = (length = 8) => {
   return crypto.randomBytes(length).toString('hex').slice(0, length).toUpperCase();
 };
 
-const generateCode = () => crypto.randomInt(100000, 999999).toString();
+const generateSixDigitOtp = () => crypto.randomInt(100000, 1000000).toString();
+
+const generateCode = generateSixDigitOtp;
 
 const normalizeObjectId = (value) => {
   if (value === undefined || value === null) return null;
@@ -40,6 +42,7 @@ const sendError = (res, message, status = 400) => {
 module.exports = {
   generateReferralCode,
   generateCode,
+  generateSixDigitOtp,
   normalizeObjectId,
   asyncHandler,
   sendSuccess,

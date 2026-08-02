@@ -1,6 +1,6 @@
 /**
  * Full API integration tests. Run: node scripts/test-all-apis.js
- * Requires server on PORT (default 3001) with MongoDB + OTP_DEV_FIXED_CODE=999999 in .env
+ * Requires server on PORT (default 3001) with MongoDB + OTP_USE_FIXED_CODE=true for tests
  */
 require("dotenv").config();
 const fs = require("fs");
@@ -275,6 +275,7 @@ async function main() {
         amount: 25,
         gateway: "jazzcash",
         accountNumber: "03009998877",
+        accountTitle: "Test User",
         code: OTP_CODE,
       },
     });
@@ -297,6 +298,7 @@ async function main() {
         amount: 25,
         gateway: "jazzcash",
         accountNumber: "03009998877",
+        accountTitle: "Test User",
         code: OTP_CODE,
       },
     });
@@ -399,18 +401,25 @@ async function main() {
       },
     });
 
+    const payoutForm = new FormData();
+    payoutForm.append("notes", "Paid via JazzCash — API test");
+    const payoutBytes = await fs.promises.readFile(receiptFilePath);
+    payoutForm.append(
+      "payoutProof",
+      new File([payoutBytes], "payout-proof.png", { type: "image/png" }),
+    );
+
     await expectOk("POST /admin/review/withdraw/:id/approve", "POST", `/admin/review/withdraw/${withdrawTransactionId}/approve`, {
       token: adminToken,
-      body: { notes: "Paid via JazzCash — API test" },
+      formData: payoutForm,
     });
 
     await expectOk("GET /wallet/withdraw/status/:id (approved)", "GET", `/wallet/withdraw/status/${withdrawTransactionId}`, {
       token: userToken,
     });
 
-    await expectStatus("GET /wallet/withdraw/receipt/:id", "GET", `/wallet/withdraw/receipt/${withdrawTransactionId}`, 404, {
+    await expectOk("GET /wallet/withdraw/receipt/:id", "GET", `/wallet/withdraw/receipt/${withdrawTransactionId}`, {
       token: userToken,
-      requireSuccess: false,
     });
   }
 
@@ -419,6 +428,58 @@ async function main() {
       token: adminToken,
       body: { notes: "API test rejection" },
     });
+  }
+
+  await expectOk("POST /admin/review/list (topup all)", "POST", "/admin/review/list", {
+    token: adminToken,
+    body: {
+      draw: 1,
+      start: 0,
+      length: 10,
+      columns: [{ data: "createdAt" }, { data: "referenceCode" }, { data: "status" }],
+      order: [{ column: 0, dir: "desc" }],
+      search: { value: "" },
+      filters: { type: "topup", status: "all" },
+    },
+  });
+
+  {
+    const { ok, res } = await expectOk(
+      "POST /admin/review/list (topup all vs approved)",
+      "POST",
+      "/admin/review/list",
+      {
+        token: adminToken,
+        body: {
+          draw: 1,
+          start: 0,
+          length: 1,
+          columns: [{ data: "createdAt" }],
+          order: [{ column: 0, dir: "desc" }],
+          search: { value: "" },
+          filters: { type: "topup", status: "all" },
+        },
+      },
+    );
+    const allTotal = res?.json?.recordsTotal ?? 0;
+    const approvedRes = await request("POST", "/admin/review/list", {
+      token: adminToken,
+      body: {
+        draw: 1,
+        start: 0,
+        length: 1,
+        columns: [{ data: "createdAt" }],
+        order: [{ column: 0, dir: "desc" }],
+        search: { value: "" },
+        filters: { type: "topup", status: "approved" },
+      },
+    });
+    const approvedTotal = approvedRes.json?.recordsTotal ?? 0;
+    record(
+      "topup status=all includes approved",
+      ok && allTotal >= approvedTotal,
+      `all=${allTotal} approved=${approvedTotal}`,
+    );
   }
 
   await expectOk("POST /admin/review/list (topup filter)", "POST", "/admin/review/list", {
@@ -558,6 +619,9 @@ async function main() {
         },
       });
       await expectOk("PATCH /admin/payment-config/bank-accounts/:id/toggle", "PATCH", `/admin/payment-config/bank-accounts/${adminBankAccountId}/toggle`, {
+        token: adminToken,
+      });
+      await expectOk("DELETE /admin/payment-config/bank-accounts/:id", "DELETE", `/admin/payment-config/bank-accounts/${adminBankAccountId}`, {
         token: adminToken,
       });
     }

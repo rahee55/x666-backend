@@ -13,6 +13,7 @@ const recordTransaction = async (
     gatewayRef = null,
     accountUsed = null,
     destinationAccount = null,
+    accountTitle = null,
     topupRequestId = null,
     paymentReference = null,
     withdrawableAt = null,
@@ -30,6 +31,7 @@ const recordTransaction = async (
     gatewayRef,
     accountUsed,
     destinationAccount,
+    accountTitle,
     topupRequestId,
     paymentReference,
     withdrawableAt,
@@ -250,7 +252,12 @@ const approveTopupRequest = async (topupRequest, { reviewedBy = null } = {}) => 
 const queueWithdrawForManualReview = async (
   userId,
   amount,
-  { destinationAccount, accountUsed = "other", gatewayRef = null } = {},
+  {
+    destinationAccount,
+    accountTitle = null,
+    accountUsed = "other",
+    gatewayRef = null,
+  } = {},
 ) => {
   const withdrawAmount = Number(amount);
 
@@ -303,6 +310,7 @@ const queueWithdrawForManualReview = async (
         gatewayRef,
         accountUsed,
         destinationAccount,
+        accountTitle,
         session,
       },
     );
@@ -322,7 +330,10 @@ const queueWithdrawForManualReview = async (
   }
 };
 
-const completePendingWithdraw = async (transactionId, { adminNotes = null } = {}) => {
+const completePendingWithdraw = async (
+  transactionId,
+  { adminNotes = null, payoutProofPath = null } = {},
+) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -354,6 +365,7 @@ const completePendingWithdraw = async (transactionId, { adminNotes = null } = {}
 
     transaction.status = "success";
     if (adminNotes) transaction.adminNotes = adminNotes;
+    if (payoutProofPath) transaction.receiptPath = payoutProofPath;
     await transaction.save({ session });
 
     await session.commitTransaction();
