@@ -15,13 +15,23 @@ const formatBankDetail = (detail) => ({
   updatedAt: detail.updatedAt,
 });
 
+// exports.listBankDetails = asyncHandler(async (req, res) => {
+//   const details = await UserBankDetail.find({ userId: req.user._id }).sort(
+//     "-isDefault -updatedAt",
+//   );
+
+//   sendSuccess(res, {
+//     data: { bankDetails: details.map(formatBankDetail) },
+//   });
+// });
+
 exports.listBankDetails = asyncHandler(async (req, res) => {
-  const details = await UserBankDetail.find({ userId: req.user._id }).sort(
-    "-isDefault -updatedAt",
-  );
+  const details = await UserBankDetail.find().sort("-isDefault -updatedAt");
 
   sendSuccess(res, {
-    data: { bankDetails: details.map(formatBankDetail) },
+    data: {
+      bankDetails: details.map(formatBankDetail),
+    },
   });
 });
 
