@@ -210,9 +210,9 @@ const runGameLoop = () => {
             } else if (gameState.currentMultiplier >= 20) {
                 gameState.currentMultiplier += 0.15; // Faster above 20x
             } else if (gameState.currentMultiplier >= 10) {
-                gameState.currentMultiplier += 0.10; // Speeds up above 10x
+                gameState.currentMultiplier += 0.05; // Speeds up above 10x
             } else {
-                gameState.currentMultiplier += 0.05; // Normal speed (under 10x)
+                gameState.currentMultiplier += 0.01; // Normal speed (under 10x)
             }
             // -----------------------------------
 
