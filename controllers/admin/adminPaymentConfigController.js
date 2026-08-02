@@ -80,6 +80,19 @@ exports.toggleBankAccount = asyncHandler(async (req, res) => {
   });
 });
 
+exports.deleteBankAccount = asyncHandler(async (req, res) => {
+  const id = normalizeObjectId(req.params.id);
+  if (!id) return sendError(res, 'Invalid id', 400);
+
+  const account = await BankAccount.findByIdAndDelete(id);
+  if (!account) return sendError(res, 'Bank account not found', 404);
+
+  sendSuccess(res, {
+    message: 'Bank account deleted successfully',
+    data: { bankAccount: formatBankAccount(account) },
+  });
+});
+
 exports.getSettings = asyncHandler(async (_req, res) => {
   const settings = await getSettings();
   sendSuccess(res, { data: { settings } });

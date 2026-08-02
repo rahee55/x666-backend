@@ -1,4 +1,6 @@
 const { getSettings } = require("../services/settingsService");
+const path = require("path");
+const fs = require("fs/promises");
 const Transaction = require("../models/Transaction");
 const {
   getBalance,
@@ -15,6 +17,7 @@ const {
   sendOTP,
   verifyOTP,
   getUserOtpTarget,
+  getWithdrawOtpTarget,
   OtpRateLimitError,
 } = require("../services/otpService");
 const { readReceipt } = require("../services/receiptService");
@@ -87,7 +90,10 @@ exports.sendOtp = asyncHandler(async (req, res) => {
 
   let target;
   try {
-    target = getUserOtpTarget(req.user);
+    target =
+      req.body.purpose === "withdraw"
+        ? getWithdrawOtpTarget(req.user)
+        : getUserOtpTarget(req.user);
   } catch (error) {
     return sendError(res, error.message);
   }
@@ -101,6 +107,7 @@ exports.sendOtp = asyncHandler(async (req, res) => {
         channel: result.channel,
         identifier: result.identifier,
         expiresAt: result.expiresAt,
+        deliveryStatus: result.delivery?.status || null,
       },
     });
   } catch (error) {
@@ -130,7 +137,7 @@ exports.withdraw = asyncHandler(async (req, res) => {
 
   let target;
   try {
-    target = getUserOtpTarget(req.user);
+    target = getWithdrawOtpTarget(req.user);
     await verifyOTP(target.identifier, code, "withdraw");
   } catch (error) {
     const status = error.message.includes("attempts exceeded") ? 429 : 400;
@@ -148,6 +155,7 @@ exports.withdraw = asyncHandler(async (req, res) => {
       amount,
       {
         destinationAccount,
+        accountTitle: accountTitle || null,
         accountUsed: gateway,
         gatewayRef: `WD-${Date.now()}`,
       },
@@ -191,7 +199,10 @@ exports.getWithdrawStatus = asyncHandler(async (req, res) => {
       amount: transaction.amount,
       status: transaction.status,
       destinationAccount: transaction.destinationAccount,
+      accountTitle: transaction.accountTitle,
+      accountUsed: transaction.accountUsed,
       adminNotes: transaction.adminNotes,
+      hasPayoutProof: Boolean(transaction.receiptPath),
       balance: wallet.balance,
       lockedBalance: wallet.lockedBalance,
       withdrawableBalance: wallet.withdrawableBalance,
@@ -209,6 +220,19 @@ exports.getWithdrawReceipt = asyncHandler(async (req, res) => {
 
   if (!transaction?.receiptPath) {
     return sendError(res, "Withdrawal receipt not found", 404);
+  }
+
+  const ext = path.extname(transaction.receiptPath).toLowerCase();
+  if ([".jpg", ".jpeg", ".png"].includes(ext)) {
+    const absolutePath = path.resolve(process.cwd(), transaction.receiptPath);
+    const buffer = await fs.readFile(absolutePath);
+    const mime = ext === ".png" ? "image/png" : "image/jpeg";
+    return sendSuccess(res, {
+      data: {
+        receiptUrl: `data:${mime};base64,${buffer.toString("base64")}`,
+        mimeType: mime,
+      },
+    });
   }
 
   const receipt = await readReceipt(transaction.receiptPath);

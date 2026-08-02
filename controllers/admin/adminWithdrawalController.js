@@ -1,3 +1,4 @@
+const path = require('path');
 const {
   completePendingWithdraw,
   rejectPendingWithdraw,
@@ -9,8 +10,13 @@ exports.approveWithdraw = asyncHandler(async (req, res) => {
   const id = normalizeObjectId(req.params.id);
   if (!id) return sendError(res, 'Invalid id', 400);
 
+  const payoutProofPath = req.file
+    ? path.relative(process.cwd(), req.file.path).replace(/\\/g, '/')
+    : null;
+
   const result = await completePendingWithdraw(id, {
-    adminNotes: req.body.notes || null,
+    adminNotes: req.body?.notes || null,
+    payoutProofPath,
   });
 
   if (!result) return sendError(res, 'Withdrawal not found or not pending', 404);

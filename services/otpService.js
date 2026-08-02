@@ -4,7 +4,7 @@ const {
   sendSms,
   isConfigured: isTwilioConfigured,
 } = require("../config/twilio");
-const { generateCode } = require("./helper");
+const { generateSixDigitOtp } = require("./helper");
 
 const OTP_EXPIRY_MS = 10 * 60 * 1000;
 const OTP_RATE_LIMIT = 5;
@@ -119,14 +119,21 @@ const sendSmsOtp = async (phone, code, purpose) => {
   };
 };
 
+const normalizeAppPassword = (pass) => (pass || "").replace(/\s/g, "");
+
 const sendEmailOtp = async (email, code, purpose) => {
   const label = PURPOSE_LABELS[purpose] || purpose;
 
   if (process.env.NODE_ENV !== "production") {
-    console.log(`[EMAIL OTP DEV] ${purpose} code for ${email}: ${code}`);
+    console.log(`[EMAIL OTP] ${purpose} code for ${email}: ${code}`);
   }
 
-  if (!useEthereal() && (!process.env.SMTP_HOST || !process.env.SMTP_PASS)) {
+  const hasSmtp =
+    useEthereal() ||
+    (process.env.SMTP_HOST && normalizeAppPassword(process.env.SMTP_PASS));
+
+  if (!hasSmtp) {
+    console.warn("[EMAIL OTP] SMTP not configured — OTP logged to console only");
     return { channel: "email", status: "dev-console-only" };
   }
 
@@ -147,7 +154,7 @@ const sendEmailOtp = async (email, code, purpose) => {
   } catch (error) {
     if (process.env.NODE_ENV !== "production") {
       console.warn(
-        "[EMAIL OTP DEV] Nodemailer failed, using console fallback:",
+        "[EMAIL OTP] Nodemailer failed, using console fallback:",
         error.message,
       );
       return { channel: "email", status: "dev-console-fallback" };
@@ -157,10 +164,16 @@ const sendEmailOtp = async (email, code, purpose) => {
 };
 
 const resolveOtpCode = () => {
-  if (process.env.NODE_ENV !== "production" && process.env.OTP_DEV_FIXED_CODE) {
-    return String(process.env.OTP_DEV_FIXED_CODE).trim();
+  const useFixed = String(process.env.OTP_USE_FIXED_CODE || "")
+    .trim()
+    .toLowerCase();
+
+  if (useFixed === "true" || useFixed === "1") {
+    const fixed = String(process.env.OTP_DEV_FIXED_CODE || "").trim();
+    if (fixed) return fixed;
   }
-  return generateCode();
+
+  return generateSixDigitOtp();
 };
 
 const generateOTP = async (identifier, purpose) => {
@@ -244,6 +257,17 @@ const verifyOTP = async (identifier, code, purpose) => {
   return { identifier: normalized, purpose, verified: true };
 };
 
+const getWithdrawOtpTarget = (user) => {
+  if (!user?.email) {
+    throw new Error("Add your email address to receive withdrawal OTP");
+  }
+
+  return {
+    identifier: user.email.trim().toLowerCase(),
+    channel: "email",
+  };
+};
+
 const getUserOtpTarget = (user) => {
   if (user.isEmailVerified && user.email) {
     return { identifier: user.email, channel: "email" };
@@ -266,9 +290,11 @@ const getUserOtpTarget = (user) => {
 
 module.exports = {
   generateOTP,
+  generateSixDigitOtp,
   sendOTP,
   verifyOTP,
   getUserOtpTarget,
+  getWithdrawOtpTarget,
   normalizeIdentifier,
   normalizePhone,
   isEmail,

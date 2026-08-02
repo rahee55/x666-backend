@@ -9,6 +9,61 @@ const escapeRegExp = (string) => String(string).replace(/[.*+?^${}()|[\]\\]/g, '
 const isEmptyFilter = (value) =>
   value === undefined || value === null || value === '' || value === 'all';
 
+const REVIEW_META_FILTER_KEYS = new Set(['type', 'status']);
+
+const stripReviewMetaFilters = (filters = {}) => {
+  const tableFilters = {};
+  Object.entries(filters).forEach(([key, value]) => {
+    if (!REVIEW_META_FILTER_KEYS.has(key)) {
+      tableFilters[key] = value;
+    }
+  });
+  return {
+    reviewType: filters.type,
+    reviewStatus: filters.status,
+    tableFilters,
+  };
+};
+
+const withSanitizedTableRequest = (req, tableFilters) => ({
+  ...req,
+  body: {
+    ...(req.body || {}),
+    filters: tableFilters,
+  },
+});
+
+const normalizeReviewStatus = (statusFilter) =>
+  String(statusFilter || 'pending').toLowerCase();
+
+const resolveTopupStatusFilter = (statusFilter) => {
+  switch (normalizeReviewStatus(statusFilter)) {
+    case 'all':
+      return {};
+    case 'approved':
+      return { status: 'approved' };
+    case 'rejected':
+      return { status: 'rejected' };
+    case 'pending':
+    default:
+      return { status: 'under_review' };
+  }
+};
+
+const resolveWithdrawStatusFilter = (statusFilter) => {
+  switch (normalizeReviewStatus(statusFilter)) {
+    case 'all':
+      return { type: 'withdraw' };
+    case 'approved':
+      return { type: 'withdraw', status: 'success' };
+    case 'rejected':
+      return { type: 'withdraw', status: 'rejected' };
+    case 'pending':
+    default:
+      return { type: 'withdraw', status: 'pending_manual_review' };
+  }
+};
+
 const formatUser = (userDoc) => {
   if (!userDoc) return null;
   const user = Array.isArray(userDoc) ? userDoc[0] : userDoc;
@@ -38,6 +93,7 @@ const formatWithdrawReviewRow = (row) => ({
   status: row.status,
   gatewayRef: row.gatewayRef,
   destinationAccount: row.destinationAccount,
+  accountTitle: row.accountTitle,
   accountUsed: row.accountUsed,
   adminNotes: row.adminNotes,
   createdAt: row.createdAt,
@@ -125,6 +181,8 @@ const topupUnionPipeline = (match) => [
       expectedAmount: 1,
       status: 1,
       receiptImageUrl: 1,
+      ocrExtractedData: 1,
+      ocrMatchResult: 1,
       adminNotes: 1,
       transactionId: 1,
       receiptNumber: 1,
@@ -163,6 +221,7 @@ const withdrawUnionPipeline = (match) => [
       status: 1,
       gatewayRef: 1,
       destinationAccount: 1,
+      accountTitle: 1,
       accountUsed: 1,
       adminNotes: 1,
       createdAt: 1,
@@ -196,12 +255,17 @@ const makeUnifiedReviewQueue = async (req) => {
   const typeFilter = isEmptyFilter(filters.type) ? 'all' : String(filters.type).toLowerCase();
 
   if (typeFilter === 'topup') {
-    const result = await makeDataTable(TopupRequest, req, {
-      baseFilters: { status: 'under_review' },
-      searchFields: ['referenceCode', 'status'],
-      populate: { path: 'userId', select: 'name email phone' },
-      defaultSort: { createdAt: -1 },
-    });
+    const { reviewStatus, tableFilters } = stripReviewMetaFilters(filters);
+    const result = await makeDataTable(
+      TopupRequest,
+      withSanitizedTableRequest(req, tableFilters),
+      {
+        baseFilters: resolveTopupStatusFilter(reviewStatus),
+        searchFields: ['referenceCode', 'status'],
+        populate: { path: 'userId', select: 'name email phone' },
+        defaultSort: { createdAt: -1 },
+      },
+    );
     return {
       ...result,
       data: result.data.map(formatTopupReviewRow),
@@ -209,12 +273,17 @@ const makeUnifiedReviewQueue = async (req) => {
   }
 
   if (typeFilter === 'withdraw') {
-    const result = await makeDataTable(Transaction, req, {
-      baseFilters: { type: 'withdraw', status: 'pending_manual_review' },
-      searchFields: ['gatewayRef', 'destinationAccount', 'accountUsed'],
-      populate: { path: 'userId', select: 'name email phone' },
-      defaultSort: { createdAt: -1 },
-    });
+    const { reviewStatus, tableFilters } = stripReviewMetaFilters(filters);
+    const result = await makeDataTable(
+      Transaction,
+      withSanitizedTableRequest(req, tableFilters),
+      {
+        baseFilters: resolveWithdrawStatusFilter(reviewStatus),
+        searchFields: ['gatewayRef', 'destinationAccount', 'accountUsed'],
+        populate: { path: 'userId', select: 'name email phone' },
+        defaultSort: { createdAt: -1 },
+      },
+    );
     return {
       ...result,
       data: result.data.map(formatWithdrawReviewRow),

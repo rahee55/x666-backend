@@ -20,7 +20,7 @@ const WITHDRAW_METHODS = [
     description: "Manual payout to your JazzCash mobile wallet",
     accountLabel: "JazzCash mobile number",
     accountPlaceholder: "03001234567",
-    requiredFields: ["accountNumber"],
+    requiredFields: ["accountNumber", "accountTitle"],
     optionalFields: [],
   },
   {
@@ -31,7 +31,7 @@ const WITHDRAW_METHODS = [
     description: "Manual payout to your EasyPaisa mobile wallet",
     accountLabel: "EasyPaisa mobile number",
     accountPlaceholder: "03001234567",
-    requiredFields: ["accountNumber"],
+    requiredFields: ["accountNumber", "accountTitle"],
     optionalFields: [],
   },
 ];

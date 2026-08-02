@@ -26,7 +26,9 @@ const formatBankDetail = (detail) => ({
 // });
 
 exports.listBankDetails = asyncHandler(async (req, res) => {
-  const details = await UserBankDetail.find().sort("-isDefault -updatedAt");
+  const details = await UserBankDetail.find({ userId: req.user._id }).sort(
+    "-isDefault -updatedAt",
+  );
 
   sendSuccess(res, {
     data: {

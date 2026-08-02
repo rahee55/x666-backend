@@ -40,6 +40,15 @@ exports.approveReview = asyncHandler(async (req, res) => {
   return adminWithdrawalController.approveWithdraw(req, res);
 });
 
+exports.approveWithdrawWithProof = asyncHandler(async (req, res) => {
+  if (!req.file) {
+    return sendError(res, 'Payout proof screenshot is required (jpg or png, max 5MB)', 400);
+  }
+
+  req.params.id = req.params.id;
+  return adminWithdrawalController.approveWithdraw(req, res);
+});
+
 exports.rejectReview = asyncHandler(async (req, res) => {
   const type = String(req.params.type || '').toLowerCase();
   if (!REVIEW_TYPES.has(type)) {

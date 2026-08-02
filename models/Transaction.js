@@ -40,6 +40,7 @@ const transactionSchema = new mongoose.Schema(
     },
     paymentReference: { type: String, default: null },
     destinationAccount: { type: String, default: null },
+    accountTitle: { type: String, default: null },
     accountUsed: {
       type: String,
       enum: ["jazzcash", "easypaisa", "bank", "manual", "other"],
