@@ -1,3 +1,4 @@
+const fs = require("fs/promises");
 const path = require("path");
 const TopupRequest = require("../models/TopupRequest");
 const BankAccount = require("../models/BankAccount");
@@ -12,6 +13,7 @@ const {
   extractFromScreenshot,
   validateExtractedFields,
 } = require("./ocrService");
+const { classifyReceiptImage } = require("./receiptClassifierService");
 
 const REF_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -197,11 +199,21 @@ const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
   const imageHash = await averageHash(file.path);
   const duplicate = await findDuplicateReceiptHash(imageHash);
   if (duplicate) {
+    await fs.unlink(file.path).catch(() => {});
     const error = new Error(
       "This receipt image appears to match a previously submitted receipt",
     );
     error.status = 409;
     error.code = "DUPLICATE_RECEIPT";
+    throw error;
+  }
+
+  const receiptClassification = await classifyReceiptImage(file.path);
+  if (!receiptClassification.isReceipt) {
+    await fs.unlink(file.path).catch(() => {});
+    const error = new Error(receiptClassification.reason);
+    error.status = 400;
+    error.code = "INVALID_RECEIPT_IMAGE";
     throw error;
   }
 
@@ -222,6 +234,7 @@ const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
   topupRequest.receiptFileHash = await fileSha256(file.path);
   topupRequest.ocrExtractedData = extracted;
   topupRequest.ocrMatchResult = ocrMatchResult;
+  topupRequest.receiptClassification = receiptClassification;
   topupRequest.status = "under_review";
   topupRequest.clientMeta = {
     ...topupRequest.clientMeta,
@@ -253,6 +266,7 @@ const formatTopupRequest = (request) => ({
   receiptImageUrl: request.receiptImageUrl,
   ocrExtractedData: request.ocrExtractedData,
   ocrMatchResult: request.ocrMatchResult,
+  receiptClassification: request.receiptClassification,
   adminNotes: request.adminNotes,
   transactionId: request.transactionId,
   receiptNumber: request.receiptNumber,

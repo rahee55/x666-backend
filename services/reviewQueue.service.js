@@ -36,7 +36,7 @@ const withSanitizedTableRequest = (req, tableFilters) => ({
 const normalizeReviewStatus = (statusFilter) =>
   String(statusFilter || 'pending').toLowerCase();
 
-const resolveTopupStatusFilter = (statusFilter) => {
+const   resolveTopupStatusFilter = (statusFilter) => {
   switch (normalizeReviewStatus(statusFilter)) {
     case 'all':
       return {};
@@ -44,6 +44,8 @@ const resolveTopupStatusFilter = (statusFilter) => {
       return { status: 'approved' };
     case 'rejected':
       return { status: 'rejected' };
+    case 'awaiting_receipt':
+      return { status: 'pending' };
     case 'pending':
     default:
       return { status: 'under_review' };
