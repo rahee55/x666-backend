@@ -38,6 +38,7 @@ const topupRequestSchema = new mongoose.Schema(
     receiptFileHash: { type: String, default: null },
     ocrExtractedData: { type: mongoose.Schema.Types.Mixed, default: null },
     ocrMatchResult: { type: mongoose.Schema.Types.Mixed, default: null },
+    receiptClassification: { type: mongoose.Schema.Types.Mixed, default: null },
     adminNotes: { type: String, default: null },
     reviewedBy: {
       type: mongoose.Schema.Types.ObjectId,

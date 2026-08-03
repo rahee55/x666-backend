@@ -68,7 +68,9 @@ exports.submitReceipt = asyncHandler(async (req, res) => {
       data: formatTopupRequest(topupRequest),
     });
   } catch (error) {
-    return sendError(res, error.message, error.status || 400);
+    const payload = { success: false, message: error.message };
+    if (error.code) payload.code = error.code;
+    return res.status(error.status || 400).json(payload);
   }
 });
 
