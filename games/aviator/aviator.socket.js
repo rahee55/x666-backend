@@ -100,8 +100,13 @@ const parseStake = (value) => {
     return Math.round(stake * 100) / 100;
 };
 
-const sendBetError = (ws, message) => {
-    sendWs(ws, { key: 'betError', message });
+const sendBetError = (ws, message, failedAction = null, betType = null) => {
+    sendWs(ws, {
+        key: 'betError',
+        message,
+        failedAction,
+        betType: betType != null ? String(betType) : null,
+    });
 };
 
 const resolveBetId = (data) => data.betId || data.betid || null;
@@ -199,7 +204,7 @@ const isValidCashoutMultiplier = (clientMultiplier) => {
     }
 
     if (gameState.status === 'RUN') {
-        return clientMultiplier <= gameState.currentMultiplier;
+        return clientMultiplier <= gameState.currentMultiplier + 0.05;
     }
 
     if (gameState.status === 'crash' && gameState.crashMultiplier !== null) {
@@ -243,7 +248,7 @@ const processCashout = async (ws, bet, cashoutBetId, clientMultiplier) => {
         return { success: true, payout };
     } catch (error) {
         bet.status = 'active';
-        sendBetError(ws, error.message || 'Unable to cash out');
+        sendBetError(ws, error.message || 'Unable to cash out', 'CashoutBet', bet.betType);
         return { error: error.message || 'Unable to cash out' };
     }
 };
@@ -334,13 +339,13 @@ const initSocket = (server) => {
                 if (data.action === 'PlaceBet') {
                     if (!requireAuth(ws)) return;
                     if (gameState.status !== 'WAIT') {
-                        sendBetError(ws, 'Bets can only be placed during the waiting period');
+                        sendBetError(ws, 'Bets can only be placed during the waiting period', 'PlaceBet', data.betType);
                         return;
                     }
 
                     const stake = parseStake(data.stake);
                     if (!stake) {
-                        sendBetError(ws, 'Invalid bet amount');
+                        sendBetError(ws, 'Invalid bet amount', 'PlaceBet', data.betType);
                         return;
                     }
 
@@ -363,26 +368,27 @@ const initSocket = (server) => {
                         sendWs(ws, {
                             key: 'betPlaced',
                             betId,
+                            betType: data.betType != null ? String(data.betType) : null,
                             stake,
                             balance: wallet.balance,
                             roundId: gameState.roundId,
                         });
                     } catch (error) {
-                        sendBetError(ws, error.message || 'Unable to place bet');
+                        sendBetError(ws, error.message || 'Unable to place bet', 'PlaceBet', data.betType);
                     }
                 }
 
                 if (data.action === 'CancelBet') {
                     if (!requireAuth(ws)) return;
                     if (gameState.status !== 'WAIT') {
-                        sendBetError(ws, 'Bets can only be cancelled during the waiting period');
+                        sendBetError(ws, 'Bets can only be cancelled during the waiting period', 'CancelBet', data.betType);
                         return;
                     }
 
                     const cancelBetId = resolveBetId(data);
                     const bet = getBetForUser(cancelBetId, ws.userId);
                     if (!bet || bet.status !== 'active') {
-                        sendBetError(ws, 'Bet not found');
+                        sendBetError(ws, 'Bet not found', 'CancelBet', data.betType);
                         return;
                     }
 
@@ -398,36 +404,46 @@ const initSocket = (server) => {
                         sendWs(ws, {
                             key: 'betCancelled',
                             betId: cancelBetId,
+                            betType: bet.betType != null ? String(bet.betType) : data.betType,
                             refunded: bet.stake,
                             balance: wallet.balance,
                         });
                     } catch (error) {
-                        sendBetError(ws, error.message || 'Unable to cancel bet');
+                        sendBetError(ws, error.message || 'Unable to cancel bet', 'CancelBet', data.betType);
                     }
                 }
 
                 if (data.action === 'CashoutBet') {
                     if (!requireAuth(ws)) return;
                     if (!isCashoutAllowed()) {
-                        sendBetError(ws, 'Cashout is only available while the round is running');
+                        sendBetError(ws, 'Cashout is only available while the round is running', 'CashoutBet', data.betType);
                         return;
                     }
 
                     const cashoutBetId = resolveBetId(data);
                     const bet = getBetForUser(cashoutBetId, ws.userId);
-                    if (!bet || bet.status !== 'active') {
-                        sendBetError(ws, 'Bet not found');
+                    if (!bet) {
+                        sendBetError(ws, 'Bet not found', 'CashoutBet', data.betType);
+                        return;
+                    }
+
+                    if (bet.status === 'cashing_out') {
+                        return;
+                    }
+
+                    if (bet.status !== 'active') {
+                        sendBetError(ws, 'Bet not found', 'CashoutBet', data.betType);
                         return;
                     }
 
                     if (bet.roundId && bet.roundId !== gameState.roundId) {
-                        sendBetError(ws, 'Bet is not for the current round');
+                        sendBetError(ws, 'Bet is not for the current round', 'CashoutBet', data.betType);
                         return;
                     }
 
                     const clientMultiplier = Number.parseFloat(data.RUNValue);
                     if (!isValidCashoutMultiplier(clientMultiplier)) {
-                        sendBetError(ws, 'Invalid cashout multiplier');
+                        sendBetError(ws, 'Invalid cashout multiplier', 'CashoutBet', data.betType);
                         return;
                     }
 
