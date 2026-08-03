@@ -25,6 +25,7 @@ const gameState = {
     roundId: null,
     currentMultiplier: 1.00,
     targetCrash: null,
+    crashMultiplier: null,
     timeRemaining: 5,
     totalBetPool: 0,
     totalPayoutDistributed: 0,
@@ -103,6 +104,8 @@ const sendBetError = (ws, message) => {
     sendWs(ws, { key: 'betError', message });
 };
 
+const resolveBetId = (data) => data.betId || data.betid || null;
+
 const getBetForUser = (betId, userId) => {
     if (!betId || !activeBets.has(betId)) {
         return null;
@@ -168,7 +171,10 @@ const broadcast = (data) => {
 };
 
 const triggerSystemCrash = (finalCrashPoint) => {
+    if (gameState.status === 'crash') return;
+
     gameState.status = 'crash';
+    gameState.crashMultiplier = finalCrashPoint;
     gameState.history.push(finalCrashPoint);
     if (gameState.history.length > 30) gameState.history.shift();
 
@@ -179,8 +185,67 @@ const triggerSystemCrash = (finalCrashPoint) => {
         gameState.timeRemaining = 5;
         gameState.totalBetPool = 0;
         gameState.totalPayoutDistributed = 0;
+        gameState.crashMultiplier = null;
         activeBets.clear();
     }, 3000);
+};
+
+const isCashoutAllowed = () =>
+    gameState.status === 'RUN' || gameState.status === 'crash';
+
+const isValidCashoutMultiplier = (clientMultiplier) => {
+    if (!Number.isFinite(clientMultiplier) || clientMultiplier <= 1) {
+        return false;
+    }
+
+    if (gameState.status === 'RUN') {
+        return clientMultiplier <= gameState.currentMultiplier;
+    }
+
+    if (gameState.status === 'crash' && gameState.crashMultiplier !== null) {
+        return clientMultiplier <= gameState.crashMultiplier + 0.01;
+    }
+
+    return false;
+};
+
+const processCashout = async (ws, bet, cashoutBetId, clientMultiplier) => {
+    if (bet.status === 'cashing_out' || bet.status === 'cashed_out') {
+        return { error: 'Cashout already in progress' };
+    }
+
+    bet.status = 'cashing_out';
+
+    const payout = Math.round(bet.stake * clientMultiplier * 100) / 100;
+
+    try {
+        const { wallet } = await creditWallet(ws.userId, payout, 'game_credit', {
+            gatewayRef: `AVIATOR-WIN-${cashoutBetId}`,
+        });
+
+        bet.status = 'cashed_out';
+        bet.cashoutMultiplier = clientMultiplier;
+        bet.payout = payout;
+        gameState.totalPayoutDistributed += payout;
+        activeBets.delete(cashoutBetId);
+
+        sendWs(ws, {
+            key: 'cashout',
+            betId: cashoutBetId,
+            betType: bet.betType,
+            stake: bet.stake,
+            multiplier: clientMultiplier,
+            payout,
+            profit: Math.round((payout - bet.stake) * 100) / 100,
+            balance: wallet.balance,
+        });
+
+        return { success: true, payout };
+    } catch (error) {
+        bet.status = 'active';
+        sendBetError(ws, error.message || 'Unable to cash out');
+        return { error: error.message || 'Unable to cash out' };
+    }
 };
 
 const runGameLoop = () => {
@@ -219,7 +284,7 @@ const runGameLoop = () => {
             broadcast({ key: 'RUNValue', value: parseFloat(gameState.currentMultiplier.toFixed(2)) });
 
             if (gameState.currentMultiplier >= gameState.targetCrash) {
-                triggerSystemCrash(gameState.targetCrash);
+                triggerSystemCrash(parseFloat(gameState.targetCrash.toFixed(2)));
             }
         }
     }, 100); 
@@ -314,7 +379,8 @@ const initSocket = (server) => {
                         return;
                     }
 
-                    const bet = getBetForUser(data.betId, ws.userId);
+                    const cancelBetId = resolveBetId(data);
+                    const bet = getBetForUser(cancelBetId, ws.userId);
                     if (!bet || bet.status !== 'active') {
                         sendBetError(ws, 'Bet not found');
                         return;
@@ -322,16 +388,16 @@ const initSocket = (server) => {
 
                     try {
                         const { wallet } = await creditWallet(ws.userId, bet.stake, 'game_credit', {
-                            gatewayRef: `AVIATOR-CANCEL-${data.betId}`,
+                            gatewayRef: `AVIATOR-CANCEL-${cancelBetId}`,
                         });
 
                         bet.status = 'cancelled';
                         gameState.totalBetPool = Math.max(0, gameState.totalBetPool - bet.stake);
-                        activeBets.delete(data.betId);
+                        activeBets.delete(cancelBetId);
 
                         sendWs(ws, {
                             key: 'betCancelled',
-                            betId: data.betId,
+                            betId: cancelBetId,
                             refunded: bet.stake,
                             balance: wallet.balance,
                         });
@@ -342,12 +408,13 @@ const initSocket = (server) => {
 
                 if (data.action === 'CashoutBet') {
                     if (!requireAuth(ws)) return;
-                    if (gameState.status !== 'RUN') {
+                    if (!isCashoutAllowed()) {
                         sendBetError(ws, 'Cashout is only available while the round is running');
                         return;
                     }
 
-                    const bet = getBetForUser(data.betId, ws.userId);
+                    const cashoutBetId = resolveBetId(data);
+                    const bet = getBetForUser(cashoutBetId, ws.userId);
                     if (!bet || bet.status !== 'active') {
                         sendBetError(ws, 'Bet not found');
                         return;
@@ -359,46 +426,21 @@ const initSocket = (server) => {
                     }
 
                     const clientMultiplier = Number.parseFloat(data.RUNValue);
-                    if (!Number.isFinite(clientMultiplier) || clientMultiplier <= 1) {
+                    if (!isValidCashoutMultiplier(clientMultiplier)) {
                         sendBetError(ws, 'Invalid cashout multiplier');
-                        return;
-                    }
-
-                    if (clientMultiplier > gameState.currentMultiplier) {
-                        sendBetError(ws, 'Cashout multiplier exceeds current multiplier');
                         return;
                     }
 
                     const payout = Math.round(bet.stake * clientMultiplier * 100) / 100;
                     const theoreticalPayoutPool = gameState.totalPayoutDistributed + payout;
+                    const shouldCrashAfterCashout = aviatorService.shouldForceCrash(
+                        gameState.totalBetPool,
+                        theoreticalPayoutPool,
+                    );
 
-                    if (aviatorService.shouldForceCrash(gameState.totalBetPool, theoreticalPayoutPool)) {
+                    const result = await processCashout(ws, bet, cashoutBetId, clientMultiplier);
+                    if (result.success && shouldCrashAfterCashout) {
                         triggerSystemCrash(clientMultiplier);
-                        return;
-                    }
-
-                    try {
-                        const { wallet } = await creditWallet(ws.userId, payout, 'game_credit', {
-                            gatewayRef: `AVIATOR-WIN-${data.betId}`,
-                        });
-
-                        bet.status = 'cashed_out';
-                        bet.cashoutMultiplier = clientMultiplier;
-                        bet.payout = payout;
-                        gameState.totalPayoutDistributed += payout;
-                        activeBets.delete(data.betId);
-
-                        sendWs(ws, {
-                            key: 'cashout',
-                            betId: data.betId,
-                            stake: bet.stake,
-                            multiplier: clientMultiplier,
-                            payout,
-                            profit: Math.round((payout - bet.stake) * 100) / 100,
-                            balance: wallet.balance,
-                        });
-                    } catch (error) {
-                        sendBetError(ws, error.message || 'Unable to cash out');
                     }
                 }
             } catch (err) {
