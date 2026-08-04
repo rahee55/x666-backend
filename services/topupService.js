@@ -2,13 +2,12 @@ const fs = require("fs/promises");
 const path = require("path");
 const TopupRequest = require("../models/TopupRequest");
 const BankAccount = require("../models/BankAccount");
-const User = require("../models/Users");
 const { getSettings } = require("./settingsService");
+const { fileSha256 } = require("./imageHashService");
 const {
-  averageHash,
-  fileSha256,
-  isNearDuplicate,
-} = require("./imageHashService");
+  DUPLICATE_MESSAGE,
+  findDuplicateReceipt,
+} = require("./receiptDuplicateService");
 const {
   extractFromScreenshot,
   validateExtractedFields,
@@ -48,65 +47,9 @@ const generateReferenceCode = async () => {
 const getActiveBankAccounts = () =>
   BankAccount.find({ isActive: true }).sort({ createdAt: 1 }).lean();
 
-const countPendingTopupsForUser = (userId) =>
-  TopupRequest.countDocuments({
-    userId,
-    status: { $in: ["pending", "under_review"] },
-  });
-
-const getDailyTopupTotal = async (userId) => {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-
-  const result = await TopupRequest.aggregate([
-    {
-      $match: {
-        userId,
-        status: { $in: ["pending", "under_review", "approved"] },
-        createdAt: { $gte: start },
-      },
-    },
-    { $group: { _id: null, total: { $sum: "$requestedAmount" } } },
-  ]);
-
-  return result[0]?.total || 0;
-};
-
-const assertTopupLimits = async (userId, amount) => {
-  const settings = await getSettings();
-
-  if (amount < settings.minTopup) {
-    throw new Error(`Minimum top-up is ${settings.minTopup}`);
-  }
-
-  if (amount > settings.maxTopupPerTransaction) {
-    throw new Error(
-      `Maximum top-up per transaction is ${settings.maxTopupPerTransaction}`,
-    );
-  }
-
-  const pendingCount = await countPendingTopupsForUser(userId);
-  if (pendingCount >= settings.maxPendingTopupsPerUser) {
-    const error = new Error(
-      `You already have ${pendingCount} pending top-up requests. Complete or wait for them to expire before creating another.`,
-    );
-    error.status = 429;
-    throw error;
-  }
-
-  const user = await User.findById(userId);
-  const isNewUser =
-    user &&
-    Date.now() - new Date(user.createdAt).getTime() <
-      settings.newUserDays * 24 * 60 * 60 * 1000;
-
-  const dailyLimit = isNewUser
-    ? settings.maxTopupPerDayNewUser
-    : settings.maxTopupPerDay;
-
-  const dailyTotal = await getDailyTopupTotal(userId);
-  if (dailyTotal + amount > dailyLimit) {
-    throw new Error(`Daily top-up limit of ${dailyLimit} would be exceeded`);
+const assertTopupLimits = async (_userId, amount) => {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("Top-up amount must be greater than zero");
   }
 };
 
@@ -154,20 +97,6 @@ const createTopupRequest = async (userId, amount, req) => {
   };
 };
 
-const findDuplicateReceiptHash = async (imageHash) => {
-  const candidates = await TopupRequest.find({
-    receiptImageHash: { $ne: null },
-    status: { $in: ["under_review", "approved"] },
-  })
-    .select("receiptImageHash referenceCode")
-    .lean();
-
-  return (
-    candidates.find((entry) => isNearDuplicate(entry.receiptImageHash, imageHash)) ||
-    null
-  );
-};
-
 const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
   const topupRequest = await TopupRequest.findOne({
     _id: topupRequestId,
@@ -196,13 +125,16 @@ const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
     throw error;
   }
 
-  const imageHash = await averageHash(file.path);
-  const duplicate = await findDuplicateReceiptHash(imageHash);
-  if (duplicate) {
+  const duplicateCheck = await findDuplicateReceipt({
+    filePath: file.path,
+    userId,
+    topupRequestId,
+    originalFilename: file.originalname,
+  });
+
+  if (duplicateCheck.duplicate) {
     await fs.unlink(file.path).catch(() => {});
-    const error = new Error(
-      "This receipt image appears to match a previously submitted receipt",
-    );
+    const error = new Error(duplicateCheck.message || DUPLICATE_MESSAGE);
     error.status = 409;
     error.code = "DUPLICATE_RECEIPT";
     throw error;
@@ -230,8 +162,12 @@ const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
   topupRequest.receiptImageUrl = path
     .relative(process.cwd(), file.path)
     .replace(/\\/g, "/");
-  topupRequest.receiptImageHash = imageHash;
+  topupRequest.receiptImageHash = duplicateCheck.imageHash;
   topupRequest.receiptFileHash = await fileSha256(file.path);
+  topupRequest.receiptOriginalFilename = String(file.originalname || "")
+    .trim()
+    .toLowerCase();
+  topupRequest.receiptImageEmbedding = duplicateCheck.embedding || null;
   topupRequest.ocrExtractedData = extracted;
   topupRequest.ocrMatchResult = ocrMatchResult;
   topupRequest.receiptClassification = receiptClassification;
