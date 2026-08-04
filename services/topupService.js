@@ -51,6 +51,11 @@ const assertTopupLimits = async (_userId, amount) => {
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("Top-up amount must be greater than zero");
   }
+
+  const settings = await getSettings();
+  if (amount < settings.minTopup) {
+    throw new Error(`Minimum top-up is ${settings.minTopup}`);
+  }
 };
 
 const expireStalePendingRequests = async (userId) => {

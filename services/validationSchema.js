@@ -1,7 +1,7 @@
 const { WITHDRAW_GATEWAYS } = require("../config/withdrawMethods");
 
 const topupInitiateSchema = {
-  amount: { required: true, type: "number", min: 1 },
+  amount: { required: true, type: "number", min: 100 },
 };
 
 const walletOtpSchema = {
