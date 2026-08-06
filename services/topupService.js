@@ -3,10 +3,11 @@ const path = require("path");
 const TopupRequest = require("../models/TopupRequest");
 const BankAccount = require("../models/BankAccount");
 const { getSettings } = require("./settingsService");
-const { fileSha256 } = require("./imageHashService");
 const {
   DUPLICATE_MESSAGE,
   findDuplicateReceipt,
+  findTransactionIdDuplicate,
+  findAiDuplicate,
 } = require("./receiptDuplicateService");
 const {
   extractFromScreenshot,
@@ -22,11 +23,11 @@ const getClientMeta = (req) => ({
 });
 
 const computeExpectedAmount = (requestedAmount) => {
-  const amountOffsetPaisa = Math.floor(Math.random() * 99) + 1;
-  const expectedAmount =
-    Math.round((requestedAmount + amountOffsetPaisa / 100) * 100) / 100;
-
-  return { expectedAmount, amountOffsetPaisa };
+  const rounded = Math.round(Number(requestedAmount) * 100) / 100;
+  return {
+    expectedAmount: rounded,
+    amountOffsetPaisa: 0,
+  };
 };
 
 const generateReferenceCode = async () => {
@@ -98,7 +99,7 @@ const createTopupRequest = async (userId, amount, req) => {
     topupRequest,
     bankAccounts,
     instructions:
-      "Transfer the exact expected amount to one of the accounts below and include the reference code in the transfer note/remark field.",
+      "Transfer the exact amount to one of the accounts below and include the reference code in the transfer note/remark field.",
   };
 };
 
@@ -116,9 +117,15 @@ const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
 
   if (topupRequest.status !== "pending") {
     const error = new Error(
-      `Top-up request is ${topupRequest.status} and cannot accept a receipt`,
+      topupRequest.status === "under_review"
+        ? "A receipt has already been submitted for this top-up request."
+        : `Top-up request is ${topupRequest.status} and cannot accept a receipt`,
     );
     error.status = 409;
+    error.code =
+      topupRequest.status === "under_review"
+        ? "RECEIPT_ALREADY_SUBMITTED"
+        : "TOPUP_STATUS_CONFLICT";
     throw error;
   }
 
@@ -132,9 +139,7 @@ const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
 
   const duplicateCheck = await findDuplicateReceipt({
     filePath: file.path,
-    userId,
     topupRequestId,
-    originalFilename: file.originalname,
   });
 
   if (duplicateCheck.duplicate) {
@@ -157,6 +162,27 @@ const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
   const extracted = await extractFromScreenshot(file.path);
   extracted.reference = topupRequest.referenceCode;
 
+  const transactionDuplicate = await findTransactionIdDuplicate(
+    extracted.transactionId,
+    topupRequestId,
+  );
+  if (transactionDuplicate?.duplicate) {
+    await fs.unlink(file.path).catch(() => {});
+    const error = new Error(transactionDuplicate.message || DUPLICATE_MESSAGE);
+    error.status = 409;
+    error.code = "DUPLICATE_RECEIPT";
+    throw error;
+  }
+
+  const aiDuplicate = await findAiDuplicate(file.path, topupRequestId);
+  if (aiDuplicate.duplicate) {
+    await fs.unlink(file.path).catch(() => {});
+    const error = new Error(aiDuplicate.message || DUPLICATE_MESSAGE);
+    error.status = 409;
+    error.code = "DUPLICATE_RECEIPT";
+    throw error;
+  }
+
   const ocrMatchResult = validateExtractedFields({
     extracted,
     referenceCode: topupRequest.referenceCode,
@@ -168,11 +194,14 @@ const submitTopupReceipt = async (topupRequestId, userId, file, req) => {
     .relative(process.cwd(), file.path)
     .replace(/\\/g, "/");
   topupRequest.receiptImageHash = duplicateCheck.imageHash;
-  topupRequest.receiptFileHash = await fileSha256(file.path);
+  topupRequest.receiptFileHash = duplicateCheck.fileHash;
   topupRequest.receiptOriginalFilename = String(file.originalname || "")
     .trim()
     .toLowerCase();
-  topupRequest.receiptImageEmbedding = duplicateCheck.embedding || null;
+  topupRequest.receiptTransactionId = extracted.transactionId
+    ? String(extracted.transactionId).trim().toUpperCase()
+    : null;
+  topupRequest.receiptImageEmbedding = aiDuplicate.embedding || null;
   topupRequest.ocrExtractedData = extracted;
   topupRequest.ocrMatchResult = ocrMatchResult;
   topupRequest.receiptClassification = receiptClassification;

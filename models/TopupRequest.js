@@ -26,7 +26,7 @@ const topupRequestSchema = new mongoose.Schema(
     },
     requestedAmount: { type: Number, required: true, min: 0 },
     expectedAmount: { type: Number, required: true, min: 0 },
-    amountOffsetPaisa: { type: Number, required: true, min: 1, max: 99 },
+    amountOffsetPaisa: { type: Number, required: true, min: 0, max: 99, default: 0 },
     status: {
       type: String,
       enum: ["pending", "under_review", "approved", "rejected", "expired"],
@@ -36,7 +36,8 @@ const topupRequestSchema = new mongoose.Schema(
     receiptImageUrl: { type: String, default: null },
     receiptImageHash: { type: String, default: null, index: true },
     receiptFileHash: { type: String, default: null, index: true },
-    receiptOriginalFilename: { type: String, default: null, index: true },
+    receiptTransactionId: { type: String, default: null, index: true },
+    receiptOriginalFilename: { type: String, default: null },
     receiptImageEmbedding: { type: [Number], default: null },
     ocrExtractedData: { type: mongoose.Schema.Types.Mixed, default: null },
     ocrMatchResult: { type: mongoose.Schema.Types.Mixed, default: null },

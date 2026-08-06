@@ -55,6 +55,26 @@ const parseSenderAccountLast4 = (text) => {
   return trailing ? trailing[trailing.length - 1] : null;
 };
 
+const parseTransactionId = (text) => {
+  const normalized = normalizeText(text);
+  const patterns = [
+    /ID\s*[#:]\s*(\d{8,15})/i,
+    /TRANSACTION\s*ID\s*[#:]?\s*(\d{8,15})/i,
+    /TID\s*[#:]?\s*(\d{8,15})/i,
+    /TXN\s*[#:]?\s*(\d{8,15})/i,
+    /REF(?:ERENCE)?\s*(?:NO|NUMBER|#)?\s*[#:]?\s*([A-Z0-9-]{8,24})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) {
+      return match[1].replace(/[^A-Z0-9-]/g, "");
+    }
+  }
+
+  return null;
+};
+
 const extractFromScreenshot = async (filePath) => {
   const { data } = await Tesseract.recognize(filePath, "eng", {
     logger: () => {},
@@ -68,6 +88,7 @@ const extractFromScreenshot = async (filePath) => {
     reference: null,
     timestamp: parseTimestamp(rawText),
     senderAccountLast4: parseSenderAccountLast4(rawText),
+    transactionId: parseTransactionId(rawText),
   };
 };
 
@@ -133,4 +154,5 @@ module.exports = {
   parseAmount,
   parseReference,
   parseTimestamp,
+  parseTransactionId,
 };

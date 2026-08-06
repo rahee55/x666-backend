@@ -48,11 +48,14 @@ const PAYMENT_KEYWORDS = {
     "SUCCESSFUL",
     "COMPLETED",
     "SUCCESS",
+    "MONEY HAS BEEN SENT",
+    "TRANSACTION SUCCESSFUL",
     "TID",
     "TXN",
     "TRANSACTION ID",
     "REFERENCE",
     "SENT TO",
+    "SENT BY",
     "RECEIVED",
     "MOBILE ACCOUNT",
     "WALLET",
@@ -62,6 +65,8 @@ const PAYMENT_KEYWORDS = {
     "PURPOSE OF PAYMENT",
     "FROM",
     " TO ",
+    "TOTAL AMOUNT",
+    "NO CHARGE",
   ],
   currency: ["PKR", "RS.", "RS ", "RUPEES", "₨"],
 };
@@ -92,6 +97,29 @@ const NON_RECEIPT_UI_KEYWORDS = [
   "SELFIE",
   "CAMERA",
   "GALLERY",
+  "FILE PROPERTIES",
+  "PROPERTIES",
+  "COMPRESSED",
+  "ZIP FOLDER",
+  "ZIPPED FOLDER",
+  "DOWNLOAD",
+  "SAVE LOCATION",
+  "HTTP/",
+  "FORBIDDEN",
+  "IDM",
+  "INTERNET DOWNLOAD",
+  "TEKKEN",
+  "GAME",
+  "ANKERGAMES",
+  "PROGRESS",
+  "COMPLETE",
+  "SAVE AS PDF",
+  "WALLPAPER",
+  "MEME",
+  "CHAT",
+  "YOUTUBE",
+  "TIKTOK",
+  "SNAPCHAT",
 ];
 
 const NON_RECEIPT_CAPTION_WORDS = [
@@ -119,6 +147,15 @@ const NON_RECEIPT_CAPTION_WORDS = [
   "desktop",
   "web page",
   "website",
+  "game",
+  "video game",
+  "download",
+  "file",
+  "folder",
+  "zip",
+  "properties",
+  "error message",
+  "dialog box",
 ];
 
 const PAYMENT_CAPTION_WORDS = [
@@ -258,19 +295,27 @@ const classifyWithHuggingFace = async (filePath) => {
   }
 };
 
-const evaluateReceiptSignals = ({ textScore, imageMetrics, hfResult }) => {
+const evaluateReceiptSignals = ({ textScore, imageMetrics, hfResult, normalizedText }) => {
   const hasProvider = textScore.found.providers.length > 0;
   const hasBank = textScore.found.banks.length > 0;
   const receiptKeywordCount = textScore.found.receipt.length;
   const hasCurrency = textScore.found.currency.length > 0;
-  const hasReceiptSignal = receiptKeywordCount > 0 || hasCurrency;
+  const hasPaymentChannel = hasProvider || hasBank;
+  const hasSuccessSignal =
+    /TRANSACTION\s*SUCCESSFUL|MONEY\s+HAS\s+BEEN\s+SENT|PAYMENT\s+SUCCESSFUL|TRANSFER\s+SUCCESSFUL/.test(
+      normalizedText || "",
+    ) ||
+    textScore.found.receipt.some((keyword) =>
+      ["SUCCESSFUL", "COMPLETED", "SUCCESS"].includes(keyword),
+    );
   const hasStrongPaymentText =
-    hasProvider ||
-    hasBank ||
-    (receiptKeywordCount >= 2 && textScore.digitCount >= 6) ||
-    (hasCurrency && receiptKeywordCount >= 1 && textScore.digitCount >= 6);
+    hasPaymentChannel &&
+    (hasSuccessSignal ||
+      receiptKeywordCount >= 2 ||
+      (hasCurrency && textScore.digitCount >= 6) ||
+      (hasBank && receiptKeywordCount >= 1 && textScore.digitCount >= 8));
 
-  let isReceipt = textScore.score >= 8 && hasStrongPaymentText;
+  let isReceipt = textScore.score >= 10 && hasStrongPaymentText && hasPaymentChannel;
   let rejectReason = null;
 
   if (textScore.uiKeywordHits.length >= 1) {
@@ -278,41 +323,45 @@ const evaluateReceiptSignals = ({ textScore, imageMetrics, hfResult }) => {
     rejectReason = INVALID_RECEIPT_MESSAGE;
   }
 
-  if (imageMetrics.isLandscapeDesktopLike && !hasBank && !hasProvider) {
+  if (!hasPaymentChannel) {
+    isReceipt = false;
+    rejectReason = INVALID_RECEIPT_MESSAGE;
+  }
+
+  if (imageMetrics.isLandscapeDesktopLike && !hasPaymentChannel) {
     isReceipt = false;
     rejectReason = INVALID_RECEIPT_MESSAGE;
   }
 
   if (
-    !hasProvider &&
-    !hasBank &&
-    receiptKeywordCount === 0 &&
-    textScore.digitCount < 6
+    !hasSuccessSignal &&
+    receiptKeywordCount < 2 &&
+    textScore.digitCount < 8 &&
+    !hasBank
   ) {
     isReceipt = false;
     rejectReason = INVALID_RECEIPT_MESSAGE;
-  }
-
-  if (
-    imageMetrics.isPortrait &&
-    imageMetrics.brightRatio >= 0.35 &&
-    hasStrongPaymentText
-  ) {
-    isReceipt = true;
   }
 
   if (hfResult) {
     if (
       hfResult.nonReceiptHits >= 1 &&
       hfResult.paymentHits === 0 &&
-      !hasBank &&
-      !hasProvider
+      !hasPaymentChannel
     ) {
       isReceipt = false;
       rejectReason = INVALID_RECEIPT_MESSAGE;
     }
 
-    if (hfResult.paymentHits >= 1 && hasStrongPaymentText) {
+    if (
+      hfResult.nonReceiptHits >= 2 &&
+      !hasSuccessSignal
+    ) {
+      isReceipt = false;
+      rejectReason = INVALID_RECEIPT_MESSAGE;
+    }
+
+    if (hfResult.paymentHits >= 1 && hasStrongPaymentText && hasPaymentChannel) {
       isReceipt = true;
       rejectReason = null;
     }
@@ -328,7 +377,7 @@ const evaluateReceiptSignals = ({ textScore, imageMetrics, hfResult }) => {
     rejectReason,
     hasProvider,
     hasBank,
-    hasReceiptSignal,
+    hasPaymentChannel,
     hasStrongPaymentText,
   };
 };
@@ -345,6 +394,7 @@ const classifyReceiptImage = async (filePath) => {
     textScore,
     imageMetrics,
     hfResult,
+    normalizedText,
   });
 
   const method = hfResult ? "ocr+image-ai" : "ocr+image";

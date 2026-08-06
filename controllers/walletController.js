@@ -21,7 +21,7 @@ const {
   OtpRateLimitError,
 } = require("../services/otpService");
 const { readReceipt } = require("../services/receiptService");
-const { listTopupRequestsForUser, formatTopupRequest } = require("../services/topupService");
+const { listTopupRequestsForUser, formatTopupRequest, getActiveBankAccounts } = require("../services/topupService");
 const { asyncHandler, sendSuccess, sendError } = require("../services/helper");
 
 const handleOtpError = (res, error) => {
@@ -40,8 +40,22 @@ const resolveWithdrawDestination = ({ gateway, accountNumber, iban }) => {
   return String(accountNumber || "").trim();
 };
 
+const formatPublicBankAccount = (account) => ({
+  id: String(account._id),
+  _id: String(account._id),
+  bankName: account.bankName,
+  accountTitle: account.accountTitle,
+  accountNumber: account.accountNumber,
+  iban: account.iban,
+  gateway: account.gateway,
+  label: account.label,
+  instructions: account.instructions,
+  isActive: account.isActive,
+});
+
 exports.getPaymentConfig = asyncHandler(async (_req, res) => {
   const settings = await getSettings();
+  const bankAccounts = await getActiveBankAccounts();
 
   sendSuccess(res, {
     data: {
@@ -55,6 +69,7 @@ exports.getPaymentConfig = asyncHandler(async (_req, res) => {
       maxPendingTopupsPerUser: settings.maxPendingTopupsPerUser,
       topupRequestTtlHours: settings.topupRequestTtlHours,
       withdrawHoldHours: settings.withdrawHoldHours,
+      bankAccounts: bankAccounts.map(formatPublicBankAccount),
     },
   });
 });

@@ -64,11 +64,15 @@ const seedAdminUser = async () => {
 };
 
 const connectDB = async () => {
-  const uri = process.env.MONGODB_URI || "mongodb://localhost:27017/x666";
+  const uri =
+    process.env.MEMORY_MONGODB_URI ||
+    process.env.MONGODB_URI ||
+    "mongodb://localhost:27017/x666";
+  const isLocalMemory = /127\.0\.0\.1|localhost/.test(uri);
 
   try {
     const conn = await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: isLocalMemory ? 30000 : 5000,
     });
     console.log(`MongoDB connected: ${conn.connection.host}`);
     await cleanupUserContactIndexes();

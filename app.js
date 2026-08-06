@@ -1,6 +1,10 @@
 const dotenv = require("dotenv");
-const preservedMongoUri = process.env.MONGODB_URI;
+const preservedMemoryUri = process.env.MEMORY_MONGODB_URI;
+const preservedMongoUri = preservedMemoryUri || process.env.MONGODB_URI;
 dotenv.config({ override: true });
+if (preservedMemoryUri) {
+  process.env.MEMORY_MONGODB_URI = preservedMemoryUri;
+}
 if (preservedMongoUri) {
   process.env.MONGODB_URI = preservedMongoUri;
 }

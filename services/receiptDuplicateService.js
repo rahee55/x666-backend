@@ -5,23 +5,23 @@ const TopupRequest = require("../models/TopupRequest");
 const {
   averageHash,
   fileSha256,
-  isNearDuplicate,
+  hammingDistance,
 } = require("./imageHashService");
 
 const DUPLICATE_MESSAGE =
   "This receipt has already been uploaded. Please use a different payment screenshot.";
 
-const HF_MODEL =
-  process.env.HF_DUPLICATE_MODEL || "sentence-transformers/clip-ViT-B-32";
-const HF_SIMILARITY_THRESHOLD =
-  Number(process.env.HF_RECEIPT_SIMILARITY_THRESHOLD) || 0.92;
-
 const ACTIVE_RECEIPT_STATUSES = ["under_review", "approved"];
 
-const normalizeFilename = (name) =>
-  String(name || "")
-    .trim()
-    .toLowerCase();
+const STRICT_PHASH_MAX_DISTANCE =
+  Number(process.env.STRICT_PHASH_MAX_DISTANCE) || 2;
+
+const HF_MODEL =
+  process.env.HF_DUPLICATE_MODEL || "sentence-transformers/clip-ViT-B-32";
+
+// Very high threshold: only near-identical screenshots (same receipt re-uploaded).
+const HF_DUPLICATE_SIMILARITY =
+  Number(process.env.HF_RECEIPT_DUPLICATE_SIMILARITY) || 0.98;
 
 const flattenEmbedding = (value) => {
   let embedding = value;
@@ -62,31 +62,18 @@ const getImageEmbedding = async (filePath) => {
     const response = await axios.post(
       `https://api-inference.huggingface.co/models/${HF_MODEL}`,
       imageBuffer,
-      {
-        headers,
-        timeout: 45000,
-      },
+      { headers, timeout: 45000 },
     );
-
     return flattenEmbedding(response.data);
   } catch {
     return null;
   }
 };
 
-const resolveReceiptPath = (receiptImageUrl) => {
-  if (!receiptImageUrl) return null;
-  return path.join(process.cwd(), receiptImageUrl);
-};
+const resolveReceiptPath = (receiptImageUrl) =>
+  receiptImageUrl ? path.join(process.cwd(), receiptImageUrl) : null;
 
-const findDuplicateReceipt = async ({
-  filePath,
-  userId,
-  topupRequestId,
-  originalFilename,
-}) => {
-  const fileHash = await fileSha256(filePath);
-
+const findExactFileDuplicate = async (fileHash, topupRequestId) => {
   const exactMatch = await TopupRequest.findOne({
     receiptFileHash: fileHash,
     status: { $in: ACTIVE_RECEIPT_STATUSES },
@@ -95,103 +82,135 @@ const findDuplicateReceipt = async ({
     .select("referenceCode")
     .lean();
 
-  if (exactMatch) {
-    return {
-      duplicate: true,
-      method: "sha256",
-      message: DUPLICATE_MESSAGE,
-      referenceCode: exactMatch.referenceCode,
-    };
-  }
+  if (!exactMatch) return null;
 
-  const normalizedName = normalizeFilename(originalFilename);
-  if (normalizedName) {
-    const sameNameMatch = await TopupRequest.findOne({
-      userId,
-      receiptOriginalFilename: normalizedName,
-      status: { $in: ACTIVE_RECEIPT_STATUSES },
-      _id: { $ne: topupRequestId },
-    })
-      .select("referenceCode")
-      .lean();
+  return {
+    duplicate: true,
+    method: "sha256",
+    message: DUPLICATE_MESSAGE,
+    referenceCode: exactMatch.referenceCode,
+  };
+};
 
-    if (sameNameMatch) {
-      return {
-        duplicate: true,
-        method: "filename",
-        message: DUPLICATE_MESSAGE,
-        referenceCode: sameNameMatch.referenceCode,
-      };
-    }
-  }
+const findStrictPhashDuplicate = async (imageHash, topupRequestId) => {
+  if (!imageHash) return null;
 
-  const imageHash = await averageHash(filePath);
   const candidates = await TopupRequest.find({
     receiptImageHash: { $ne: null },
     status: { $in: ACTIVE_RECEIPT_STATUSES },
     _id: { $ne: topupRequestId },
   })
-    .select("receiptImageHash receiptImageUrl receiptImageEmbedding referenceCode")
+    .select("receiptImageHash referenceCode")
     .lean();
 
-  const phashMatch = candidates.find((entry) =>
-    isNearDuplicate(entry.receiptImageHash, imageHash),
+  const phashMatch = candidates.find(
+    (entry) =>
+      hammingDistance(entry.receiptImageHash, imageHash) <=
+      STRICT_PHASH_MAX_DISTANCE,
   );
 
-  if (phashMatch) {
-    return {
-      duplicate: true,
-      method: "phash",
-      message: DUPLICATE_MESSAGE,
-      referenceCode: phashMatch.referenceCode,
-      imageHash,
-    };
+  if (!phashMatch) return null;
+
+  return {
+    duplicate: true,
+    method: "phash",
+    message: DUPLICATE_MESSAGE,
+    referenceCode: phashMatch.referenceCode,
+    imageHash,
+  };
+};
+
+const findTransactionIdDuplicate = async (transactionId, topupRequestId) => {
+  const normalizedId = String(transactionId || "")
+    .trim()
+    .toUpperCase();
+
+  if (!normalizedId || normalizedId.length < 6) return null;
+
+  const txnMatch = await TopupRequest.findOne({
+    receiptTransactionId: normalizedId,
+    status: { $in: ACTIVE_RECEIPT_STATUSES },
+    _id: { $ne: topupRequestId },
+  })
+    .select("referenceCode")
+    .lean();
+
+  if (!txnMatch) return null;
+
+  return {
+    duplicate: true,
+    method: "transaction_id",
+    message: DUPLICATE_MESSAGE,
+    referenceCode: txnMatch.referenceCode,
+  };
+};
+
+const findAiDuplicate = async (filePath, topupRequestId) => {
+  const newEmbedding = await getImageEmbedding(filePath);
+  if (!newEmbedding) {
+    return { duplicate: false, embedding: null };
   }
 
-  const newEmbedding = await getImageEmbedding(filePath);
-  if (newEmbedding) {
-    for (const candidate of candidates) {
-      let candidateEmbedding = flattenEmbedding(candidate.receiptImageEmbedding);
+  const candidates = await TopupRequest.find({
+    status: { $in: ACTIVE_RECEIPT_STATUSES },
+    _id: { $ne: topupRequestId },
+    $or: [
+      { receiptImageEmbedding: { $exists: true, $ne: null } },
+      { receiptImageUrl: { $ne: null } },
+    ],
+  })
+    .select("receiptImageEmbedding receiptImageUrl referenceCode")
+    .lean();
 
-      if (!candidateEmbedding?.length) {
-        const candidatePath = resolveReceiptPath(candidate.receiptImageUrl);
-        if (candidatePath && fs.existsSync(candidatePath)) {
-          candidateEmbedding = await getImageEmbedding(candidatePath);
-        }
-      }
+  for (const candidate of candidates) {
+    let candidateEmbedding = flattenEmbedding(candidate.receiptImageEmbedding);
 
-      if (!candidateEmbedding?.length) continue;
-
-      const similarity = cosineSimilarity(newEmbedding, candidateEmbedding);
-      if (similarity >= HF_SIMILARITY_THRESHOLD) {
-        return {
-          duplicate: true,
-          method: "huggingface",
-          message: DUPLICATE_MESSAGE,
-          similarity,
-          referenceCode: candidate.referenceCode,
-          imageHash,
-          embedding: newEmbedding,
-        };
+    if (!candidateEmbedding?.length) {
+      const candidatePath = resolveReceiptPath(candidate.receiptImageUrl);
+      if (candidatePath && fs.existsSync(candidatePath)) {
+        candidateEmbedding = await getImageEmbedding(candidatePath);
       }
     }
 
-    return {
-      duplicate: false,
-      imageHash,
-      embedding: newEmbedding,
-    };
+    if (!candidateEmbedding?.length) continue;
+
+    const similarity = cosineSimilarity(newEmbedding, candidateEmbedding);
+    if (similarity >= HF_DUPLICATE_SIMILARITY) {
+      return {
+        duplicate: true,
+        method: "huggingface",
+        message: DUPLICATE_MESSAGE,
+        similarity,
+        referenceCode: candidate.referenceCode,
+        embedding: newEmbedding,
+      };
+    }
   }
+
+  return { duplicate: false, embedding: newEmbedding };
+};
+
+const findDuplicateReceipt = async ({ filePath, topupRequestId }) => {
+  const fileHash = await fileSha256(filePath);
+
+  const exactDuplicate = await findExactFileDuplicate(fileHash, topupRequestId);
+  if (exactDuplicate) return exactDuplicate;
+
+  const imageHash = await averageHash(filePath);
+  const phashDuplicate = await findStrictPhashDuplicate(imageHash, topupRequestId);
+  if (phashDuplicate) return phashDuplicate;
 
   return {
     duplicate: false,
     imageHash,
+    fileHash,
   };
 };
 
 module.exports = {
   DUPLICATE_MESSAGE,
   findDuplicateReceipt,
+  findTransactionIdDuplicate,
+  findAiDuplicate,
   getImageEmbedding,
-  cosineSimilarity,
 };
