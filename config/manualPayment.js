@@ -46,6 +46,9 @@ module.exports = {
   ocrTimestampWindowMinutes:
     Number(process.env.OCR_TIMESTAMP_WINDOW_MINUTES) || 30,
   withdrawHoldHours: Number(process.env.WITHDRAW_HOLD_HOURS) || 48,
+  maxWithdrawPerTransaction:
+    Number(process.env.MAX_WITHDRAW_PER_TRANSACTION) || 20000,
+  maxWithdrawPerDay: Number(process.env.MAX_WITHDRAW_PER_DAY) || 500000,
   maxTopupPerTransaction: Number(process.env.MAX_TOPUP_PER_TRANSACTION) || 50000,
   maxTopupPerDay: Number(process.env.MAX_TOPUP_PER_DAY) || 100000,
   maxTopupPerDayNewUser:

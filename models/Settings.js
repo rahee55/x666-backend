@@ -1,10 +1,10 @@
-const mongoose = require('mongoose');
-const manualPayment = require('../config/manualPayment');
-const { MIN_TOPUP, MIN_WITHDRAW } = require('../config/constants');
+const mongoose = require("mongoose");
+const manualPayment = require("../config/manualPayment");
+const { MIN_TOPUP, MIN_WITHDRAW } = require("../config/constants");
 
 const settingsSchema = new mongoose.Schema(
   {
-    key: { type: String, required: true, unique: true, default: 'payment' },
+    key: { type: String, required: true, unique: true, default: "payment" },
     currency: { type: String, default: manualPayment.currency },
     minTopup: { type: Number, default: MIN_TOPUP, min: 0 },
     minWithdraw: { type: Number, default: MIN_WITHDRAW, min: 0 },
@@ -13,7 +13,11 @@ const settingsSchema = new mongoose.Schema(
       default: manualPayment.maxTopupPerTransaction,
       min: 0,
     },
-    maxTopupPerDay: { type: Number, default: manualPayment.maxTopupPerDay, min: 0 },
+    maxTopupPerDay: {
+      type: Number,
+      default: manualPayment.maxTopupPerDay,
+      min: 0,
+    },
     maxTopupPerDayNewUser: {
       type: Number,
       default: manualPayment.maxTopupPerDayNewUser,
@@ -35,8 +39,18 @@ const settingsSchema = new mongoose.Schema(
       default: manualPayment.withdrawHoldHours,
       min: 0,
     },
+    maxWithdrawPerTransaction: {
+      type: Number,
+      default: manualPayment.maxWithdrawPerTransaction,
+      min: 0,
+    },
+    maxWithdrawPerDay: {
+      type: Number,
+      default: manualPayment.maxWithdrawPerDay,
+      min: 0,
+    },
   },
   { timestamps: true },
 );
 
-module.exports = mongoose.model('Settings', settingsSchema);
+module.exports = mongoose.model("Settings", settingsSchema);

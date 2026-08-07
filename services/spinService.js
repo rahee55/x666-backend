@@ -1,5 +1,12 @@
+const mongoose = require('mongoose');
 const SpinHistory = require('../models/SpinHistory');
-const { SPIN_SLOTS, SPIN_WEIGHTS, SPIN_LIFETIME_LIMIT } = require('../config/constants');
+const Transaction = require('../models/Transaction');
+const {
+  SPIN_SLOTS,
+  SPIN_WEIGHTS,
+  SPIN_LIFETIME_LIMIT,
+  MIN_GAME_USAGE_FOR_WITHDRAW,
+} = require('../config/constants');
 
 const assertWeightConfig = () => {
   if (SPIN_SLOTS.length !== SPIN_WEIGHTS.length) {
@@ -38,23 +45,60 @@ const getRemainingSpins = async (userId) => {
 
 const hasCompletedFirstSpin = async (userId) => (await getLifetimeSpinCount(userId)) >= 1;
 
+const getTotalGameWagered = async (userId) => {
+  const result = await Transaction.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(String(userId)),
+        type: 'game_debit',
+        status: 'success',
+      },
+    },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+
+  return result[0]?.total || 0;
+};
+
+const hasMetMinGameUsage = async (userId) =>
+  (await getTotalGameWagered(userId)) >= MIN_GAME_USAGE_FOR_WITHDRAW;
+
 const getWithdrawEligibility = async (userId) => {
-  const canWithdraw = await hasCompletedFirstSpin(userId);
+  const [firstSpinDone, totalGameUsage] = await Promise.all([
+    hasCompletedFirstSpin(userId),
+    getTotalGameWagered(userId),
+  ]);
+  const gameUsageMet = totalGameUsage >= MIN_GAME_USAGE_FOR_WITHDRAW;
+  const canWithdraw = firstSpinDone && gameUsageMet;
+
+  let message = null;
+  if (!firstSpinDone) {
+    message = 'Complete your first spin before withdrawing';
+  } else if (!gameUsageMet) {
+    const remaining = Math.max(0, MIN_GAME_USAGE_FOR_WITHDRAW - totalGameUsage);
+    message = `Play games worth at least ${MIN_GAME_USAGE_FOR_WITHDRAW} PKR before withdrawing. You need ${remaining} PKR more in game play.`;
+  }
 
   return {
     canWithdraw,
-    firstSpinRequired: !canWithdraw,
-    message: canWithdraw ? null : 'Complete your first spin before withdrawing',
+    firstSpinRequired: !firstSpinDone,
+    minGameUsageRequired: MIN_GAME_USAGE_FOR_WITHDRAW,
+    totalGameUsage,
+    gameUsageMet,
+    message,
   };
 };
 
 const assertWithdrawAllowed = async (userId) => {
-  if (await hasCompletedFirstSpin(userId)) {
+  const eligibility = await getWithdrawEligibility(userId);
+  if (eligibility.canWithdraw) {
     return;
   }
 
-  const error = new Error('Complete your first spin before withdrawing');
-  error.code = 'FIRST_SPIN_REQUIRED';
+  const error = new Error(eligibility.message);
+  error.code = eligibility.firstSpinRequired
+    ? 'FIRST_SPIN_REQUIRED'
+    : 'MIN_GAME_USAGE_REQUIRED';
   error.status = 403;
   throw error;
 };
@@ -75,6 +119,8 @@ module.exports = {
   getLifetimeSpinCount,
   getRemainingSpins,
   hasCompletedFirstSpin,
+  getTotalGameWagered,
+  hasMetMinGameUsage,
   getWithdrawEligibility,
   assertWithdrawAllowed,
   assertCanSpin,

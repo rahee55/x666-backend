@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 const Wallet = require("../models/Wallet");
 const Transaction = require("../models/Transaction");
 const TopupRequest = require("../models/TopupRequest");
-const { getWithdrawHoldHours } = require("./settingsService");
+const { getWithdrawHoldHours, getSettings } = require("./settingsService");
 
 const recordTransaction = async (
   userId,
@@ -192,7 +192,57 @@ const getWithdrawableBalance = async (userId) => {
   return Math.max(0, (wallet?.balance || 0) - held);
 };
 
-const approveTopupRequest = async (topupRequest, { reviewedBy = null } = {}) => {
+const getStartOfToday = () => {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+};
+
+const getDailyWithdrawTotal = async (userId) => {
+  const startOfDay = getStartOfToday();
+  const result = await Transaction.aggregate([
+    {
+      $match: {
+        userId: new mongoose.Types.ObjectId(String(userId)),
+        type: "withdraw",
+        status: { $in: ["pending_manual_review", "success", "pending"] },
+        createdAt: { $gte: startOfDay },
+      },
+    },
+    { $group: { _id: null, total: { $sum: "$amount" } } },
+  ]);
+
+  return result[0]?.total || 0;
+};
+
+const assertWithdrawLimits = async (userId, amount) => {
+  const withdrawAmount = Number(amount);
+  const settings = await getSettings();
+
+  if (withdrawAmount > settings.maxWithdrawPerTransaction) {
+    const error = new Error(
+      `Maximum withdrawal per request is ${settings.maxWithdrawPerTransaction} PKR`,
+    );
+    error.status = 400;
+    throw error;
+  }
+
+  const dailyTotal = await getDailyWithdrawTotal(userId);
+  if (dailyTotal + withdrawAmount > settings.maxWithdrawPerDay) {
+    const remaining = Math.max(0, settings.maxWithdrawPerDay - dailyTotal);
+    const error = new Error(
+      remaining === 0
+        ? `Daily withdrawal limit of ${settings.maxWithdrawPerDay} PKR reached. Try again tomorrow.`
+        : `Daily withdrawal limit exceeded. You can withdraw up to ${remaining} PKR more today.`,
+    );
+    error.status = 400;
+    throw error;
+  }
+};
+
+const approveTopupRequest = async (
+  topupRequest,
+  { reviewedBy = null } = {},
+) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -275,6 +325,8 @@ const queueWithdrawForManualReview = async (
     throw error;
   }
 
+  await assertWithdrawLimits(userId, withdrawAmount);
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -287,7 +339,6 @@ const queueWithdrawForManualReview = async (
       throw error;
     }
 
-   
     if (Number(wallet.balance || 0) < withdrawAmount) {
       const error = new Error("Insufficient wallet balance.");
       error.status = 402;
@@ -299,7 +350,6 @@ const queueWithdrawForManualReview = async (
     wallet.lockedBalance = Number(wallet.lockedBalance || 0) + withdrawAmount;
 
     await wallet.save({ session });
-
 
     const transaction = await recordTransaction(
       userId,
@@ -378,7 +428,10 @@ const completePendingWithdraw = async (
   }
 };
 
-const rejectPendingWithdraw = async (transactionId, { adminNotes = null } = {}) => {
+const rejectPendingWithdraw = async (
+  transactionId,
+  { adminNotes = null } = {},
+) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -462,4 +515,6 @@ module.exports = {
   countTransactions,
   getWithdrawableBalance,
   getHeldTopupAmount,
+  getDailyWithdrawTotal,
+  assertWithdrawLimits,
 };

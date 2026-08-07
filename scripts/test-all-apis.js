@@ -262,6 +262,23 @@ async function main() {
     await expectOk("GET /spin/result/:id", "GET", `/spin/result/${spinHistoryId}`, { token: userToken });
   }
 
+  // Seed game usage + balance so withdraw eligibility passes (min 1000 PKR wagered)
+  {
+    const mongoose = require("mongoose");
+    const { creditWallet, debitWallet } = require("../services/walletService");
+    await mongoose.connect(process.env.MONGODB_URI);
+    try {
+      await creditWallet(userId, 5000, "topup", { status: "success" });
+      await debitWallet(userId, 1000, "game_debit", {
+        gatewayRef: `TEST-BET-${Date.now()}`,
+        status: "success",
+      });
+    } finally {
+      await mongoose.disconnect();
+    }
+    record("seed game usage for withdraw tests", true, "credited 5000 + game_debit 1000");
+  }
+
   // ── Withdraw (use spin balance before top-up hold affects withdrawable) ──
   await expectOk("POST /wallet/send-otp", "POST", "/wallet/send-otp", {
     token: userToken,

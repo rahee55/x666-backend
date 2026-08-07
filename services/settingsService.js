@@ -1,8 +1,8 @@
-const Settings = require('../models/Settings');
-const manualPayment = require('../config/manualPayment');
-const { MIN_TOPUP, MIN_WITHDRAW } = require('../config/constants');
+const Settings = require("../models/Settings");
+const manualPayment = require("../config/manualPayment");
+const { MIN_TOPUP, MIN_WITHDRAW } = require("../config/constants");
 
-const SETTINGS_KEY = 'payment';
+const SETTINGS_KEY = "payment";
 
 const DEFAULT_SETTINGS = {
   key: SETTINGS_KEY,
@@ -16,6 +16,8 @@ const DEFAULT_SETTINGS = {
   maxPendingTopupsPerUser: manualPayment.maxPendingTopupsPerUser,
   topupRequestTtlHours: manualPayment.topupRequestTtlHours,
   withdrawHoldHours: manualPayment.withdrawHoldHours,
+  maxWithdrawPerTransaction: manualPayment.maxWithdrawPerTransaction,
+  maxWithdrawPerDay: manualPayment.maxWithdrawPerDay,
 };
 
 const formatSettings = (doc) => {
@@ -31,6 +33,9 @@ const formatSettings = (doc) => {
     maxPendingTopupsPerUser: settings.maxPendingTopupsPerUser,
     topupRequestTtlHours: settings.topupRequestTtlHours,
     withdrawHoldHours: settings.withdrawHoldHours,
+    maxWithdrawPerTransaction:
+      settings.maxWithdrawPerTransaction ?? manualPayment.maxWithdrawPerTransaction,
+    maxWithdrawPerDay: settings.maxWithdrawPerDay ?? manualPayment.maxWithdrawPerDay,
     updatedAt: settings.updatedAt,
   };
 };
@@ -52,16 +57,18 @@ const getWithdrawHoldHours = async () => {
 
 const updateSettings = async (payload) => {
   const allowed = [
-    'currency',
-    'minTopup',
-    'minWithdraw',
-    'maxTopupPerTransaction',
-    'maxTopupPerDay',
-    'maxTopupPerDayNewUser',
-    'newUserDays',
-    'maxPendingTopupsPerUser',
-    'topupRequestTtlHours',
-    'withdrawHoldHours',
+    "currency",
+    "minTopup",
+    "minWithdraw",
+    "maxTopupPerTransaction",
+    "maxTopupPerDay",
+    "maxTopupPerDayNewUser",
+    "newUserDays",
+    "maxPendingTopupsPerUser",
+    "topupRequestTtlHours",
+    "withdrawHoldHours",
+    "maxWithdrawPerTransaction",
+    "maxWithdrawPerDay",
   ];
 
   const updates = {};

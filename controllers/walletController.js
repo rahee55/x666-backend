@@ -12,7 +12,10 @@ const {
   validateWithdrawDetails,
   validate,
 } = require("../services/validationSchema");
-const { getWithdrawEligibility, assertWithdrawAllowed } = require("../services/spinService");
+const {
+  getWithdrawEligibility,
+  assertWithdrawAllowed,
+} = require("../services/spinService");
 const {
   sendOTP,
   verifyOTP,
@@ -21,7 +24,11 @@ const {
   OtpRateLimitError,
 } = require("../services/otpService");
 const { readReceipt } = require("../services/receiptService");
-const { listTopupRequestsForUser, formatTopupRequest, getActiveBankAccounts } = require("../services/topupService");
+const {
+  listTopupRequestsForUser,
+  formatTopupRequest,
+  getActiveBankAccounts,
+} = require("../services/topupService");
 const { asyncHandler, sendSuccess, sendError } = require("../services/helper");
 
 const handleOtpError = (res, error) => {
@@ -53,9 +60,12 @@ const formatPublicBankAccount = (account) => ({
   isActive: account.isActive,
 });
 
-exports.getPaymentConfig = asyncHandler(async (_req, res) => {
+exports.getPaymentConfig = asyncHandler(async (req, res) => {
   const settings = await getSettings();
   const bankAccounts = await getActiveBankAccounts();
+  const eligibility = req.user
+    ? await getWithdrawEligibility(req.user._id)
+    : { canWithdraw: false };
 
   sendSuccess(res, {
     data: {
@@ -69,6 +79,13 @@ exports.getPaymentConfig = asyncHandler(async (_req, res) => {
       maxPendingTopupsPerUser: settings.maxPendingTopupsPerUser,
       topupRequestTtlHours: settings.topupRequestTtlHours,
       withdrawHoldHours: settings.withdrawHoldHours,
+      maxWithdrawPerTransaction: settings.maxWithdrawPerTransaction,
+      maxWithdrawPerDay: settings.maxWithdrawPerDay,
+      minGameUsageRequired: eligibility.minGameUsageRequired,
+      totalGameUsage: eligibility.totalGameUsage,
+      gameUsageMet: eligibility.gameUsageMet,
+      canWithdraw: eligibility.canWithdraw,
+      withdrawMessage: eligibility.message,
       bankAccounts: bankAccounts.map(formatPublicBankAccount),
     },
   });
@@ -134,7 +151,7 @@ exports.withdraw = asyncHandler(async (req, res) => {
   try {
     await assertWithdrawAllowed(req.user._id);
   } catch (error) {
-    if (error.code === "FIRST_SPIN_REQUIRED") {
+    if (error.code === "FIRST_SPIN_REQUIRED" || error.code === "MIN_GAME_USAGE_REQUIRED") {
       return sendError(res, error.message, error.status);
     }
     throw error;
@@ -187,7 +204,8 @@ exports.withdraw = asyncHandler(async (req, res) => {
         accountTitle: accountTitle || null,
         balance: wallet.balance,
         lockedBalance: wallet.lockedBalance,
-        withdrawableBalance: (await getBalance(req.user._id)).withdrawableBalance,
+        withdrawableBalance: (await getBalance(req.user._id))
+          .withdrawableBalance,
         transactionId: transaction._id,
         status: transaction.status,
       },
