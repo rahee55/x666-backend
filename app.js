@@ -10,6 +10,8 @@ if (preservedMongoUri) {
 }
 const express = require("express");
 const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
 const connectDB = require("./config/mongoose");
 const sessionMiddleware = require("./middleware/session");
 
@@ -20,10 +22,35 @@ const app = express();
 
 connectDB();
 
-app.use(cors("*"));
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(sessionMiddleware);
+
+const resolveApkPath = () => {
+  const candidates = [
+    process.env.APK_FILE_PATH,
+    path.join(__dirname, "../x666/public/x666-1.apk"),
+    path.join(__dirname, "public/x666-1.apk"),
+  ].filter(Boolean);
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+};
+
+const APK_FILE_PATH = resolveApkPath();
+const APK_FILE_NAME = path.basename(APK_FILE_PATH || "x666-1.apk");
+
+app.get("/api/downloads/:fileName", (req, res) => {
+  if (req.params.fileName !== APK_FILE_NAME) {
+    return res.status(404).json({ success: false, message: "APK not found" });
+  }
+
+  if (!APK_FILE_PATH || !fs.existsSync(APK_FILE_PATH)) {
+    return res.status(404).json({ success: false, message: "APK file missing on server" });
+  }
+
+  res.download(APK_FILE_PATH, APK_FILE_NAME);
+});
 
 const routes = require("./routes/index");
 app.use("/api", routes);
