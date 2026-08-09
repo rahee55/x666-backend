@@ -4,6 +4,33 @@ const Transaction = require("../models/Transaction");
 const TopupRequest = require("../models/TopupRequest");
 const { getWithdrawHoldHours, getSettings } = require("./settingsService");
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isTransientMongoError = (error) => {
+  if (!error) return false;
+  if (typeof error.hasErrorLabel === "function") {
+    if (error.hasErrorLabel("TransientTransactionError")) return true;
+    if (error.hasErrorLabel("UnknownTransactionCommitResult")) return true;
+  }
+  return [112, 251].includes(error.code);
+};
+
+const withTransactionRetry = async (fn, { maxAttempts = 5 } = {}) => {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientMongoError(error) || attempt === maxAttempts) {
+        throw error;
+      }
+      await sleep(25 * attempt);
+    }
+  }
+  throw lastError;
+};
+
 const recordTransaction = async (
   userId,
   type,
@@ -68,14 +95,7 @@ const creditWallet = async (
     throw new Error("Credit amount must be greater than zero");
   }
 
-  const ownsSession = !externalSession;
-  const session = externalSession || (await mongoose.startSession());
-
-  if (ownsSession) {
-    session.startTransaction();
-  }
-
-  try {
+  const runCredit = async (session, ownsSession) => {
     const wallet = await Wallet.findOneAndUpdate(
       { userId },
       { $inc: { balance: amount } },
@@ -99,15 +119,28 @@ const creditWallet = async (
     }
 
     return { wallet, transaction };
+  };
+
+  if (!externalSession) {
+    return withTransactionRetry(async () => {
+      const session = await mongoose.startSession();
+      session.startTransaction();
+      try {
+        return await runCredit(session, true);
+      } catch (error) {
+        await session.abortTransaction();
+        throw error;
+      } finally {
+        session.endSession();
+      }
+    });
+  }
+
+  const session = externalSession;
+  try {
+    return await runCredit(session, false);
   } catch (error) {
-    if (ownsSession) {
-      await session.abortTransaction();
-    }
     throw error;
-  } finally {
-    if (ownsSession) {
-      session.endSession();
-    }
   }
 };
 
@@ -127,22 +160,16 @@ const debitWallet = async (
     throw new Error("Debit amount must be greater than zero");
   }
 
-  const ownsSession = !externalSession;
-  const session = externalSession || (await mongoose.startSession());
+  const runDebit = async (session, ownsSession) => {
+    const wallet = await Wallet.findOneAndUpdate(
+      { userId, balance: { $gte: amount } },
+      { $inc: { balance: -amount } },
+      { new: true, session },
+    );
 
-  if (ownsSession) {
-    session.startTransaction();
-  }
-
-  try {
-    const wallet = await Wallet.findOne({ userId }).session(session);
-
-    if (!wallet || wallet.balance < amount) {
+    if (!wallet) {
       throw new Error("Insufficient balance");
     }
-
-    wallet.balance -= amount;
-    await wallet.save({ session });
 
     const transaction = await recordTransaction(userId, type, amount, {
       status,
@@ -157,15 +184,28 @@ const debitWallet = async (
     }
 
     return { wallet, transaction };
+  };
+
+  if (!externalSession) {
+    return withTransactionRetry(async () => {
+      const session = await mongoose.startSession();
+      session.startTransaction();
+      try {
+        return await runDebit(session, true);
+      } catch (error) {
+        await session.abortTransaction();
+        throw error;
+      } finally {
+        session.endSession();
+      }
+    });
+  }
+
+  const session = externalSession;
+  try {
+    return await runDebit(session, false);
   } catch (error) {
-    if (ownsSession) {
-      await session.abortTransaction();
-    }
     throw error;
-  } finally {
-    if (ownsSession) {
-      session.endSession();
-    }
   }
 };
 
