@@ -30,15 +30,15 @@ app.use(sessionMiddleware);
 const resolveApkPath = () => {
   const candidates = [
     process.env.APK_FILE_PATH,
-    path.join(__dirname, "../x666/public/x666-1.apk"),
-    path.join(__dirname, "public/x666-1.apk"),
+    path.join(__dirname, "../x666/public/x666.apk"),
+    path.join(__dirname, "public/x666.apk"),
   ].filter(Boolean);
 
   return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
 };
 
 const APK_FILE_PATH = resolveApkPath();
-const APK_FILE_NAME = path.basename(APK_FILE_PATH || "x666-1.apk");
+const APK_FILE_NAME = path.basename(APK_FILE_PATH || "x666.apk");
 
 app.get("/api/downloads/:fileName", (req, res) => {
   if (req.params.fileName !== APK_FILE_NAME) {
