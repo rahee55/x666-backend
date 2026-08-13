@@ -27,29 +27,50 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(sessionMiddleware);
 
-const resolveApkPath = () => {
-  const candidates = [
+const resolveApkCandidates = () =>
+  [
     process.env.APK_FILE_PATH,
-    path.join(__dirname, "../x666/public/x666.apk"),
     path.join(__dirname, "public/x666.apk"),
+    path.join(__dirname, "public/x666-1.apk"),
+    path.join(__dirname, "../x666/public/x666.apk"),
+    path.join(__dirname, "../x666/public/x666-1.apk"),
   ].filter(Boolean);
 
-  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
+const findApkPath = (fileName = null) => {
+  const candidates = resolveApkCandidates();
+
+  if (fileName) {
+    const matched = candidates.find(
+      (candidate) =>
+        path.basename(candidate).toLowerCase() === fileName.toLowerCase() &&
+        fs.existsSync(candidate),
+    );
+    if (matched) return matched;
+  }
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
 };
 
-const APK_FILE_PATH = resolveApkPath();
-const APK_FILE_NAME = path.basename(APK_FILE_PATH || "x666.apk");
+const defaultApkPath = findApkPath();
+if (defaultApkPath) {
+  console.log(`[APK] Download ready: ${defaultApkPath}`);
+} else {
+  console.warn(
+    "[APK] No APK file on server. Upload x666.apk to ~/X666-BACKEND/public/ or set APK_FILE_PATH in .env",
+  );
+}
 
 app.get("/api/downloads/:fileName", (req, res) => {
-  if (req.params.fileName !== APK_FILE_NAME) {
-    return res.status(404).json({ success: false, message: "APK not found" });
+  const apkPath = findApkPath(req.params.fileName);
+
+  if (!apkPath) {
+    return res.status(404).json({
+      success: false,
+      message: "APK file missing on server. Upload x666.apk to the backend public folder.",
+    });
   }
 
-  if (!APK_FILE_PATH || !fs.existsSync(APK_FILE_PATH)) {
-    return res.status(404).json({ success: false, message: "APK file missing on server" });
-  }
-
-  res.download(APK_FILE_PATH, APK_FILE_NAME);
+  res.download(apkPath, path.basename(apkPath));
 });
 
 const routes = require("./routes/index");
